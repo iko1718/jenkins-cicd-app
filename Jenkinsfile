@@ -2,7 +2,12 @@
 
 pipeline {
     // Defines the agent where the pipeline runs (the host VM where Jenkins is running)
-    agent any
+    agent {
+        docker {
+            image 'jenkins/jenkins:lts'
+            args '-u root -v /var/run/docker.sock:/var/run/docker.sock' 
+        }
+    }
 
     // Environment variables used throughout the pipeline
     environment {
