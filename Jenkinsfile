@@ -1,5 +1,3 @@
-// Jenkinsfile
-
 pipeline {
     // Defines the agent where the pipeline runs (the host VM where Jenkins is running)
     agent any
@@ -11,11 +9,14 @@ pipeline {
         // Your Docker Hub username and image name (e.g., 'yourusername/cicd-app')
         DOCKER_IMAGE_NAME = "your-dockerhub-username/cicd-app"
         // The ID of the Kubeconfig credential stored in Jenkins
+        // NOTE: This MUST now be a Secret Text credential in Jenkins!
         KUBECONFIG_CREDENTIAL_ID = 'minikube-config'
+        // Define a name for the temporary file that will hold the Kubeconfig content
+        KUBECONFIG_FILE = 'kubeconfig-temp.yaml'
     }
 
     stages {
-     
+      
         // ===================================
         // Stage 1: Build (Create Docker Image)
         // ===================================
@@ -71,25 +72,35 @@ pipeline {
         // ===================================
         stage('Deploy to K8s') {
             steps {
-                // Use 'withKubeConfig' to securely access the stored Kubeconfig file
-                withKubeConfig([credentialsId: env.KUBECONFIG_CREDENTIAL_ID]) {
-                    script {
-                        def imageTag = "${env.DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}"
+                script {
+                    def imageTag = "${env.DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}"
+                    def deployFile = 'kubernetes-deployment.yaml'
+
+                    // Use 'withCredentials' (Secret Text) to get the Kubeconfig content
+                    withCredentials([string(
+                        credentialsId: env.KUBECONFIG_CREDENTIAL_ID,
+                        variable: 'KUBECFG_CONTENT' // This variable will hold the YAML text
+                    )]) {
                         echo "Deploying image ${imageTag} to Minikube cluster..."
 
-                        // 1. Find the deployment manifest file
-                        def deployFile = 'kubernetes-deployment.yaml'
+                        // 1. Write the Secret Text content to a temporary file
+                        // The 'echo' must be wrapped in 'sh' and the variable quoted to preserve multi-line content
+                        sh "echo \"\${KUBECFG_CONTENT}\" > ${env.KUBECONFIG_FILE}"
+                        sh "echo 'Kubeconfig file created at: ${env.KUBECONFIG_FILE}'"
 
                         // 2. Temporarily replace the placeholder with the actual image tag
                         // This uses sed to find and replace the PLACEHOLDER_IMAGE_URL
                         sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deployFile}"
                         
                         // 3. Apply the deployment to Minikube using kubectl
-                        // 'kubectl apply' creates/updates the deployment and service
-                        sh "kubectl apply -f ${deployFile}"
+                        // CRITICAL: We use '--kubeconfig=' to point to the temporary file we just created.
+                        sh "kubectl --kubeconfig=${env.KUBECONFIG_FILE} apply -f ${deployFile}"
 
-                        // 4. (Optional) Revert the file change for the next commit/build
+                        // 4. Revert the file change for the next commit/build
                         sh "git checkout ${deployFile}"
+                        
+                        // 5. Cleanup: Delete the temporary Kubeconfig file
+                        sh "rm ${env.KUBECONFIG_FILE}"
 
                         echo "Deployment complete! Application is now running on Kubernetes."
                     }
