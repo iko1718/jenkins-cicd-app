@@ -7,7 +7,7 @@ pipeline {
         // The ID of the Docker Hub credentials stored in Jenkins
         DOCKER_HUB_CREDS = 'dockerhub-creds'
         // Your Docker Hub username and image name (e.g., 'yourusername/cicd-app')
-        DOCKER_IMAGE_NAME = "your-dockerhub-username/cicd-app"
+        DOCKER_IMAGE_NAME = "sonaliponnappaa/cicd-app"
         // The ID of the Kubeconfig credential stored in Jenkins
         // NOTE: This MUST now be a Secret Text credential in Jenkins!
         KUBECONFIG_CREDENTIAL_ID = 'minikube-config'
