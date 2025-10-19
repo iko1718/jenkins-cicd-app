@@ -15,21 +15,9 @@ pipeline {
     }
 
     stages {
+     
         // ===================================
-        // Stage 1: Checkout (Pull Code)
-        // ===================================
-        stage('Checkout Code') {
-            steps {
-                echo 'Checking out source code from Git...'
-                // The 'checkout scm' step uses the Git configuration from the job
-                // If the repository is public, this might be enough.
-                // If using SSH/Private, Jenkins credentials handle the authentication.
-                checkout scm
-            }
-        }
-
-        // ===================================
-        // Stage 2: Build (Create Docker Image)
+        // Stage 1: Build (Create Docker Image)
         // ===================================
         stage('Build Image') {
             steps {
