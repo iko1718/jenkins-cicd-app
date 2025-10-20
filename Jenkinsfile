@@ -41,9 +41,13 @@ pipeline {
                         // Added retry block to handle 504 Gateway Time-out errors
                         retry(3) {
                             echo "Attempting docker push (Attempt ${currentBuild.number})..."
+                            // Push the version-specific tag first
                             customImage.push()
-                            // Tag and push 'latest'
-                            customImage.tag('latest')
+                        }
+
+                        // Tag and push 'latest' separately (less critical if it fails)
+                        customImage.tag('latest')
+                        retry(3) {
                             customImage.push('latest')
                         }
                     }
