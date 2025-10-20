@@ -1,131 +1,87 @@
+// This pipeline builds a Docker image, pushes it to Docker Hub, 
+// and deploys the updated image to a Kubernetes cluster using kubectl.
+
 pipeline {
     agent any
 
-    // Define environment variables used throughout the pipeline
+    // Define environment variables and credential IDs
     environment {
-        DOCKER_IMAGE = 'sonaliponnappaa/cicd-app'
+        // Your Docker Hub repo name
+        DOCKER_IMAGE_NAME = 'sonaliponnappaa/cicd-app' 
+        
+        // Credential IDs configured in Jenkins
+        DOCKER_USER_CREDS = 'dockerhub-creds' // ID for Docker Hub username/password
+        KUBE_CONFIG_CREDS = 'minikube-config' // ID for Kubernetes secret text
     }
 
     stages {
+        // Stage 1: Checkout the source code
         stage('Checkout SCM') {
             steps {
-                // Checkout the repository code
+                // Gets the source code from the configured Git repository
                 checkout scm
             }
         }
 
+        // Stage 2: Build the Docker Image
         stage('Build Image') {
             steps {
                 script {
-                    def imageTag = env.BUILD_NUMBER
-                    
-                    // Use credentials to perform manual shell login/build, bypassing flaky Groovy wrappers
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: 'dockerhub-creds',
-                            usernameVariable: 'DOCKER_USER',
-                            passwordVariable: 'DOCKER_PASS'
-                        )
-                    ]) {
-                        // 1. Robustly log in for base image pulls (with retry for 503/504 errors)
+                    // Use withCredentials to securely inject Docker username and password (DOCKER_PASS)
+                    withCredentials([usernamePassword(credentialsId: env.DOCKER_USER_CREDS, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        
+                        // Robust login for base image pull during build
                         retry(3) {
                             echo "Attempting robust docker login for base image pull..."
-                            sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                            sh "echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin"
                         }
-                        
-                        echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag} using shell command..."
-                        // 2. Perform manual shell build
-                        sh "docker build -t ${DOCKER_IMAGE}:${imageTag} ."
+
+                        // Build the image using the current build number as the tag
+                        echo "Building Docker image: ${DOCKER_IMAGE_NAME}:${BUILD_ID}..."
+                        sh "docker build -t ${DOCKER_IMAGE_NAME}:${BUILD_ID} ."
                     }
                 }
             }
         }
 
+        // Stage 3: Push the Docker Image (Includes network resilience and retry logic)
         stage('Push Image') {
             steps {
                 script {
-                    def imageTag = env.BUILD_NUMBER
+                    echo "Starting authenticated push for ${DOCKER_IMAGE_NAME}:${BUILD_ID}"
                     
-                    echo "Starting authenticated shell push for ${DOCKER_IMAGE}:${imageTag}"
-                    
-                    // Add an initial stabilization delay to combat persistent 504s
-                    echo "Network stabilization: Waiting 15 seconds before first push attempt..."
-                    sleep 15
-                    
-                    // Use withCredentials to securely inject username/password variables for raw shell push.
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: 'dockerhub-creds',
-                            usernameVariable: 'DOCKER_USER',
-                            passwordVariable: 'DOCKER_PASS'
-                        )
-                    ]) {
-                        // 1. Robustly log in again just before push (with retry)
+                    withCredentials([usernamePassword(credentialsId: env.DOCKER_USER_CREDS, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        
+                        // Network stabilization pause (15 seconds proved effective)
+                        echo "Network stabilization: Waiting 15 seconds before first push attempt..."
+                        sleep 15
+                        
+                        // Robust login right before push
                         retry(3) {
                             echo "Attempting robust docker login before push..."
-                            sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                            sh "echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin"
                         }
                         
-                        // Define sandbox-safe delays for retries (in seconds)
-                        def delays = [0, 20, 40, 80, 160] 
-                        def maxRetries = 5
-                        def retryCount = 0
-                        def pushSuccess = false
-                        
-                        // --- Push Versioned Tag with Exponential Backoff ---
-                        while (!pushSuccess && retryCount < maxRetries) {
+                        // Retry loop for the push operation
+                        for (int i = 1; i <= 5; i++) {
                             try {
-                                retryCount++
-                                echo "Attempt ${retryCount}/${maxRetries}: Pushing ${DOCKER_IMAGE}:${imageTag}"
+                                echo "Attempt ${i}/5: Pushing ${DOCKER_IMAGE_NAME}:${BUILD_ID}"
+                                sh "docker push ${DOCKER_IMAGE_NAME}:${BUILD_ID}"
+                                echo "Push successful on attempt ${i}"
                                 
-                                // Apply sandbox-safe exponential delay from the predefined list
-                                if (retryCount > 1) {
-                                    def delaySeconds = delays[retryCount - 1]
-                                    echo "Waiting ${delaySeconds} seconds before retry..."
-                                    sleep time: delaySeconds, unit: 'SECONDS'
-                                }
+                                // Tag and push 'latest'
+                                sh "docker tag ${DOCKER_IMAGE_NAME}:${BUILD_ID} ${DOCKER_IMAGE_NAME}:latest"
+                                echo "Attempt ${i}/5: Pushing ${DOCKER_IMAGE_NAME}:latest"
+                                sh "docker push ${DOCKER_IMAGE_NAME}:latest"
+                                echo "Latest push successful on attempt ${i}"
                                 
-                                sh "docker push ${DOCKER_IMAGE}:${imageTag}"
-                                pushSuccess = true
-                                echo "Push successful on attempt ${retryCount}"
-                                
+                                break // Exit loop on success
                             } catch (Exception e) {
-                                echo "Push attempt ${retryCount} failed: ${e.getMessage()}"
-                                if (retryCount >= maxRetries) {
-                                    error("Failed to push image after ${maxRetries} attempts")
+                                if (i == 5) {
+                                    error("Push failed after ${i} attempts: ${e.getMessage()}")
                                 }
-                            }
-                        }
-                        
-                        // --- Tag and push latest only if versioned push succeeded ---
-                        if (pushSuccess) {
-                            sh "docker tag ${DOCKER_IMAGE}:${imageTag} ${DOCKER_IMAGE}:latest"
-                            
-                            // Push latest with same retry logic (resetting counters)
-                            def latestSuccess = false
-                            retryCount = 0
-                            
-                            while (!latestSuccess && retryCount < maxRetries) {
-                                try {
-                                    retryCount++
-                                    echo "Attempt ${retryCount}/${maxRetries}: Pushing ${DOCKER_IMAGE}:latest"
-                                    
-                                    if (retryCount > 1) {
-                                        def delaySeconds = delays[retryCount - 1]
-                                        echo "Waiting ${delaySeconds} seconds before retry..."
-                                        sleep time: delaySeconds, unit: 'SECONDS'
-                                    }
-                                    
-                                    sh "docker push ${DOCKER_IMAGE}:latest"
-                                    latestSuccess = true
-                                    echo "Latest push successful on attempt ${retryCount}"
-                                    
-                                } catch (Exception e) {
-                                    echo "Latest push attempt ${retryCount} failed: ${e.getMessage()}"
-                                    if (retryCount >= maxRetries) {
-                                        echo "Warning: Failed to push 'latest' tag, but versioned tag was successful. Continuing pipeline..."
-                                    }
-                                }
+                                echo "Push failed on attempt ${i}. Retrying in ${i * 5} seconds..."
+                                sleep i * 5
                             }
                         }
                     }
@@ -133,50 +89,40 @@ pipeline {
             }
         }
 
+        // Stage 4: Deploy to Kubernetes (Fixed Kubeconfig parsing issue)
         stage('Deploy to K8s') {
+            // Run on a clean node/workspace (assuming your Jenkins VM has kubectl installed)
             agent {
-                docker {
-                    // Use a kubectl image to run deployment commands
-                    image 'bitnami/kubectl:latest'
-                    // IMPORTANT: Use --entrypoint="" to bypass Bitnami's custom entrypoint
-                    args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock'
-                }
+                node { label 'master' } 
             }
             steps {
-                // Get the Kubeconfig content from Jenkins credentials
-                withCredentials([string(credentialsId: 'minikube-config', variable: 'KUBECFG_CONTENT')]) {
-                    withEnv(["IMAGE_TAG=${BUILD_NUMBER}"]) {
-                        sh "mkdir -p .kube"
+                sh "mkdir -p .kube"
+                
+                // Use withCredentials to inject KUBECFG_CONTENT securely
+                withCredentials([string(credentialsId: env.KUBE_CONFIG_CREDS, variable: 'KUBECFG_CONTENT')]) {
+                    
+                    // 1. Write the content to a temp config file
+                    writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                        // Write the Kubeconfig secret content to a temporary file
-                        writeFile file: '.kube/config.temp', text: "$KUBECFG_CONTENT"
+                    // 2. SIMPLIFIED CLEANUP: Remove empty lines and surrounding whitespace. 
+                    // This avoids the 'tr -cd' command which damaged the YAML structure.
+                    sh "sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config.temp"
 
-                        echo "Performing ultimate cleanup on Kubeconfig file..."
+                    // 3. Rename the cleaned file and set restrictive permissions
+                    sh "mv .kube/config.temp .kube/config"
+                    sh "chmod 600 .kube/config"
 
-                        // 1. Aggressively strip ALL non-printable characters (except basic space, tab, and newline)
-                        sh "tr -cd '\\11\\12\\15\\40-\\176' < .kube/config.temp > .kube/config"
-
-                        // 2. Remove all blank lines and all leading/trailing whitespace in-place
-                        sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config'
+                    // 4. Set the KUBECONFIG environment variable for kubectl
+                    withEnv(["KUBECONFIG=.kube/config", "IMAGE_URL=${DOCKER_IMAGE_NAME}:${BUILD_ID}"]) {
+                        sh "echo Deploying image ${IMAGE_URL} to Kubernetes..."
                         
-                        // Clean up temporary file
-                        sh "rm .kube/config.temp"
+                        // 5. Update the K8s manifest with the new image tag
+                        sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${IMAGE_URL}|g' kubernetes-deployment.yaml"
 
-                        sh 'chmod 600 .kube/config'
-
-                        echo "Deploying image ${DOCKER_IMAGE}:${IMAGE_TAG} to Kubernetes..."
-
-                        // Replace the placeholder image tag in kubernetes-deployment.yaml
-                        sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${DOCKER_IMAGE}:${IMAGE_TAG}|g' kubernetes-deployment.yaml"
-
-                        // Apply the deployment using the cleaned config file
-                        withEnv(["KUBECONFIG=.kube/config"]) {
-                            sh "kubectl apply -f kubernetes-deployment.yaml"
-                        }
-
-                        // Clean up the working directory after deployment
-                        sh 'git checkout kubernetes-deployment.yaml'
-                        sh 'rm -rf .kube'
+                        // 6. Apply the deployment
+                        sh "kubectl apply -f kubernetes-deployment.yaml"
+                        
+                        echo "Deployment command executed successfully."
                     }
                 }
             }
