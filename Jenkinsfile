@@ -1,55 +1,76 @@
 pipeline {
-    agent {
-        // Assuming you used the 'ubuntu:latest' image based on the logs
-        docker {
-            image 'ubuntu:latest'
-            args '-u root' // Use root to ensure apt installation permissions
-        }
-    }
+    // The agent for the outer pipeline, where the initial SCM checkout happens.
+    agent any
+
+    // Define the required environment variables or tool images
     environment {
-        // Define any environment variables you need here
-        K8S_VERSION = '1.29' // Using this variable for consistency
+        // Use a lightweight base image where we can install kubectl
+        KUBE_TOOLS_IMAGE = 'ubuntu:latest'
     }
+
     stages {
-        stage('Checkout Code') {
+        // Stage 1: Initial SCM Checkout (as seen in your log)
+        stage('Declarative: Checkout SCM') {
             steps {
-                // Assuming your checkout step is fine, keeping it minimal here
+                echo 'Checking out source code...'
                 checkout scm
             }
         }
 
-        stage('Setup Tools') {
-            steps {
-                sh """
-                echo "Installing dependencies..."
-                apt-get update -y
-                # Install base tools for repository setup
-                apt-get install -y curl gnupg apt-transport-https
-
-                # 1. Add Kubernetes GPG Key and Repository
-                install -m 0755 -d /etc/apt/keyrings
-                curl -fsSL https://pkgs.k8s.io/core:/stable:/v\${K8S_VERSION}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-                echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v\${K8S_VERSION}/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
-
-                # 2. Update and Install kubectl
-                apt-get update -y
-
-                # FIX: Install the generic kubectl package.
-                # Since the repository is already filtered to v1.29, this installs the latest 1.29.x version.
-                # Removed the problematic '=1.29.0-00' version constraint.
-                apt-get install -y kubectl
-                
-                # Optional: Verify installation
-                kubectl version --client
-                """
+        // Stage 2: Execute build and deployment steps inside a Docker container
+        stage('CI/CD Process') {
+            agent {
+                docker {
+                    image "${KUBE_TOOLS_IMAGE}"
+                    // Important: Use 'root' user so we can run apt-get install
+                    args '-u root'
+                }
             }
-        }
+            stages {
+                
+                // Sub-Stage A: Ensure the code is available inside the container
+                stage('Checkout Code') {
+                    steps {
+                        // Re-checkout the code to ensure the container volume sees it correctly
+                        checkout scm
+                    }
+                }
 
-        stage('Deploy to Kubernetes') {
-            steps {
-                echo "Deployment logic would go here..."
-                // Example:
-                // kubectl apply -f kubernetes/deployment.yaml
+                // Sub-Stage B: Setup kubectl and other tools
+                stage('Setup Tools') {
+                    steps {
+                        echo "Installing kubectl inside ${KUBE_TOOLS_IMAGE}..."
+                        sh """
+                            # 1. Update package list and install prerequisites
+                            apt-get update -y
+                            apt-get install -y curl gnupg apt-transport-https
+
+                            # 2. Add Kubernetes official signing key (using the v1.29 config from your log)
+                            install -m 0755 -d /etc/apt/keyrings
+                            curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+                            
+                            # 3. Add the Kubernetes repository
+                            echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
+                            
+                            # 4. Install kubectl
+                            apt-get update -y
+                            apt-get install -y kubectl
+                            
+                            # 5. Verify installation
+                            kubectl version --client
+                        """
+                    }
+                }
+
+                // Sub-Stage C: FIXED DEPLOYMENT COMMAND
+                stage('Deploy to Kubernetes') {
+                    steps {
+                        echo '--- Starting Deployment to Kubernetes Cluster ---'
+                        // Use the exact filename in the root of the workspace
+                        sh 'kubectl apply -f kubernetes-deployment.yaml'
+                        echo 'Deployment successfully initiated! Status depends on cluster connection.'
+                    }
+                }
             }
         }
     }
