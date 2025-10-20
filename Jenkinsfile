@@ -49,14 +49,14 @@ pipeline {
                     
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
                     
-                    # 4. Create a NEW KUBECONFIG using file paths and the VM's PRIVATE IP.
-                    # **CRITICAL CHANGE**: Using the reliable private IP and port 8443
+                    # 4. Create a NEW KUBECONFIG using file paths and the VM's TRUE AZURE PRIVATE IP.
+                    # This IP is routable between your two Azure VMs.
                     cat << EOF > $KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
 - cluster:
     certificate-authority: $PWD/ca.crt
-    server: https://192.168.49.2:8443
+    server: https://10.2.0.4:8443
   name: minikube
 contexts:
 - context:
@@ -80,7 +80,7 @@ EOF
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
                     
-                    # This test will now attempt to connect to the private IP on port 8443
+                    # This test will now attempt to connect to the routable private IP on port 8443
                     kubectl cluster-info
                     
                     # --- DEPLOYMENT STEP ---
