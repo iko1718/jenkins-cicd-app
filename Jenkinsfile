@@ -19,7 +19,6 @@ pipeline {
                 // We use the docker tool agent for this step
                 script {
                     def imageTag = env.BUILD_NUMBER
-                    // --- CHANGED: Using 'dockerhub-creds'
                     docker.withRegistry('', 'dockerhub-creds') {
                         echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag}"
                         def customImage = docker.build("${DOCKER_IMAGE}:${imageTag}", '.')
@@ -33,7 +32,6 @@ pipeline {
                 // We use the docker tool agent for this step
                 script {
                     def imageTag = env.BUILD_NUMBER
-                    // --- CHANGED: Using 'dockerhub-creds'
                     docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-creds') {
                         echo "Logging into Docker Hub and pushing image: ${DOCKER_IMAGE}:${imageTag}"
                         def customImage = docker.image("${DOCKER_IMAGE}:${imageTag}")
@@ -51,7 +49,8 @@ pipeline {
                 docker {
                     // Use a kubectl image to run deployment commands
                     image 'bitnami/kubectl:latest'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                    // --- FINAL FIX: Add --entrypoint="" to bypass the Bitnami entrypoint ---
+                    args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
             steps {
