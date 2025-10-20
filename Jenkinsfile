@@ -1,4 +1,3 @@
-// This is the file that defines your build, test, and deployment process in Jenkins.
 pipeline {
     agent any
 
@@ -27,7 +26,6 @@ pipeline {
                 withCredentials([
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
                 ]) {
-                    // Using triple-double quotes (""") and backslash escaping for extreme robustness.
                     sh """
                     # 1. Add the current directory (where ./kubectl is) to the execution PATH.
                     export PATH=\$PATH:\$PWD
@@ -35,28 +33,32 @@ pipeline {
                     # 2. Define the path for the new, CLEAN kubeconfig file
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
 
-                    echo "--- Decoding and cleaning up Kubeconfig (Final Two-Step Cleaning Fix) ---"
+                    echo "--- Decoding and cleaning up Kubeconfig (Improved Extraction) ---"
 
-                    # --- MOST ROBUST DECODING STEPS ---
-                    # Logic: Capture raw data (including space/newline) into a variable, then clean the variable, then decode.
+                    # --- IMPROVED BASE64 EXTRACTION ---
+                    # Use awk to extract the base64 data more reliably
 
                     # 1. Decode CA Certificate 
-                    # Step 1a: Capture the raw data after the first colon (includes leading space and trailing newline)
-                    CA_DATA=\$(grep 'certificate-authority-data:' \$KUBECONFIG_SOURCE | cut -d: -f2)
-                    # Step 1b: Clean the variable by removing ALL whitespace (spaces, tabs, newlines)
-                    CA_DATA=\$(echo "\$CA_DATA" | tr -d '[:space:]')
-                    # Step 1c: Decode the clean variable content
-                    echo "\$CA_DATA" | base64 -d > ca.crt
+                    grep 'certificate-authority-data:' "\$KUBECONFIG_SOURCE" | awk '{print \$2}' | base64 -d > ca.crt
 
                     # 2. Decode Client Certificate
-                    CLIENT_CERT_DATA=\$(grep 'client-certificate-data:' \$KUBECONFIG_SOURCE | cut -d: -f2)
-                    CLIENT_CERT_DATA=\$(echo "\$CLIENT_CERT_DATA" | tr -d '[:space:]')
-                    echo "\$CLIENT_CERT_DATA" | base64 -d > client.crt
+                    grep 'client-certificate-data:' "\$KUBECONFIG_SOURCE" | awk '{print \$2}' | base64 -d > client.crt
 
                     # 3. Decode Client Key
-                    CLIENT_KEY_DATA=\$(grep 'client-key-data:' \$KUBECONFIG_SOURCE | cut -d: -f2)
-                    CLIENT_KEY_DATA=\$(echo "\$CLIENT_KEY_DATA" | tr -d '[:space:]')
-                    echo "\$CLIENT_KEY_DATA" | base64 -d > client.key
+                    grep 'client-key-data:' "\$KUBECONFIG_SOURCE" | awk '{print \$2}' | base64 -d > client.key
+
+                    # Verify the files were created and have content
+                    echo "--- Verifying certificate files ---"
+                    ls -la ca.crt client.crt client.key
+                    echo "CA cert size:" \$(stat -c%s ca.crt) "bytes"
+                    echo "Client cert size:" \$(stat -c%s client.crt) "bytes" 
+                    echo "Client key size:" \$(stat -c%s client.key) "bytes"
+
+                    # Check if files contain proper PEM data
+                    echo "--- Checking PEM headers ---"
+                    head -1 ca.crt
+                    head -1 client.crt
+                    head -1 client.key
 
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
 
@@ -90,15 +92,19 @@ EOF
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
 
-                    # Flag to skip TLS verification
-                    kubectl cluster-info --insecure-skip-tls-verify 
+                    # First, let's check if we can connect with verbose output
+                    ./kubectl --v=6 cluster-info --insecure-skip-tls-verify || true
+
+                    # Try a simpler test first
+                    echo "--- Simple API test ---"
+                    ./kubectl get nodes --insecure-skip-tls-verify
 
                     # --- DEPLOYMENT STEP ---
                     echo "--- Starting Deployment Logic ---"
 
                     # Apply deployment and service files, skipping TLS verification
-                    kubectl apply -f deployment.yaml --insecure-skip-tls-verify
-                    kubectl apply -f service.yaml --insecure-skip-tls-verify
+                    ./kubectl apply -f deployment.yaml --insecure-skip-tls-verify
+                    ./kubectl apply -f service.yaml --insecure-skip-tls-verify
 
                     echo "Deployment logic completed."
                     """
