@@ -80,12 +80,16 @@ EOF
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
                     
-                    # This test will now attempt to connect to the routable private IP on port 8443
-                    kubectl cluster-info
+                    # ADDED FLAG: This flag forces kubectl to skip certificate validation,
+                    # solving the 'unknown authority' error caused by Minikube's self-signed certs.
+                    kubectl cluster-info --insecure-skip-tls-verify 
                     
                     # --- DEPLOYMENT STEP ---
                     echo "--- Starting Deployment Logic ---"
-                    # Add your actual deployment commands here, e.g., kubectl apply -f deployment.yaml
+                    
+                    # ADDED FLAG: All deployment steps must also skip TLS verification.
+                    kubectl apply -f deployment.yaml --insecure-skip-tls-verify
+                    kubectl apply -f service.yaml --insecure-skip-tls-verify
 
                     echo "Deployment logic completed."
                     '''
