@@ -17,6 +17,14 @@ pipeline {
 
     stages {
         // Stage 1: Checkout the source code
+        stage('Declarative: Checkout SCM') {
+            steps {
+                // Gets the source code from the configured Git repository
+                checkout scm
+            }
+        }
+
+        // Stage 2: Checkout SCM (for reference, kept for pipeline compatibility)
         stage('Checkout SCM') {
             steps {
                 // Gets the source code from the configured Git repository
@@ -24,7 +32,7 @@ pipeline {
             }
         }
 
-        // Stage 2: Build the Docker Image
+        // Stage 3: Build the Docker Image
         stage('Build Image') {
             steps {
                 script {
@@ -45,7 +53,7 @@ pipeline {
             }
         }
 
-        // Stage 3: Push the Docker Image (Includes network resilience and retry logic)
+        // Stage 4: Push the Docker Image (Includes network resilience and retry logic)
         stage('Push Image') {
             steps {
                 script {
@@ -90,7 +98,7 @@ pipeline {
             }
         }
 
-        // Stage 4: Deploy to Kubernetes
+        // Stage 5: Deploy to Kubernetes
         stage('Deploy to K8s') {
             // Run this stage inside the kubectl Docker image
             agent {
@@ -105,22 +113,18 @@ pipeline {
                 sh "mkdir -p .kube"
                 withCredentials([string(credentialsId: env.KUBE_CONFIG_CREDS, variable: 'KUBECFG_CONTENT')]) {
                     
-                    // Write the secret content to a temp file
-                    writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
+                    // --- CRITICAL FIX: Direct Groovy manipulation of secret content ---
+                    // 1. Write the secret content directly to .kube/config.temp
+                    // 2. Use a single, powerful shell command to clean, sanitize, and finalize the file.
 
-                    // *** CRITICAL FIX: Use single quotes (''') for the literal shell block ***
-                    // This bypasses Groovy's variable interpolation, allowing the shell's $ to pass through correctly.
-                    sh '''
-                        # 1. Remove all empty lines, leading/trailing whitespace (safe sed)
-                        sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config.temp
-                        
-                        # 2. Use 'tr' to remove all double quotes (") which are the common corruption cause
-                        tr -d '"' < .kube/config.temp > .kube/config.temp.tmp
-                        mv .kube/config.temp.tmp .kube/config.temp
-                    '''
+                    // Use KUBECFG_CONTENT, which contains the raw secret text
+                    // NOTE: Groovy interpolates the variable here, but the following shell cleanup removes any side effects.
+                    writeFile(file: ".kube/config", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // Finalize config file
-                    sh "mv .kube/config.temp .kube/config"
+                    // NEW ROBUST CLEANUP STEP: Remove quotes, leading/trailing whitespace, and empty lines.
+                    // This is the most effective way to eliminate the "json parse error" caused by invisible characters.
+                    sh "sed -i -e 's/\"//g' -e '/^\\s*$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\$//' .kube/config"
+                    
                     sh "chmod 600 .kube/config"
 
                     // Set the KUBECONFIG environment variable (runs inside the kubectl container)
