@@ -12,19 +12,12 @@ pipeline {
         
         // Credential IDs configured in Jenkins
         DOCKER_USER_CREDS = 'dockerhub-creds' // ID for Docker Hub username/password
-        KUBE_CONFIG_CREDS = 'minikube-config' // ID for Kubernetes secret text
+        // CRITICAL CHANGE: This must now be the ID of a "Secret file" credential
+        KUBE_CONFIG_CREDS = 'kubeconfig' 
     }
 
     stages {
         // Stage 1: Checkout the source code
-        stage('Declarative: Checkout SCM') {
-            steps {
-                // Gets the source code from the configured Git repository
-                checkout scm
-            }
-        }
-
-        // Stage 2: Checkout SCM (for reference, kept for pipeline compatibility)
         stage('Checkout SCM') {
             steps {
                 // Gets the source code from the configured Git repository
@@ -32,7 +25,7 @@ pipeline {
             }
         }
 
-        // Stage 3: Build the Docker Image
+        // Stage 2: Build the Docker Image
         stage('Build Image') {
             steps {
                 script {
@@ -53,7 +46,7 @@ pipeline {
             }
         }
 
-        // Stage 4: Push the Docker Image (Includes network resilience and retry logic)
+        // Stage 3: Push the Docker Image (Includes network resilience and retry logic)
         stage('Push Image') {
             steps {
                 script {
@@ -98,44 +91,34 @@ pipeline {
             }
         }
 
-        // Stage 5: Deploy to Kubernetes
+        // Stage 4: Deploy to Kubernetes
         stage('Deploy to K8s') {
             // Run this stage inside the kubectl Docker image
             agent {
                 docker {
                     image 'bitnami/kubectl:latest'
-                    args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
             
             steps {
-                // Setup Kubeconfig file
-                sh "mkdir -p .kube"
-                withCredentials([string(credentialsId: env.KUBE_CONFIG_CREDS, variable: 'KUBECFG_CONTENT')]) {
-                    
-                    // 1. Write the secret content directly to .kube/config
-                    writeFile(file: ".kube/config", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
-
-                    // 2. CRITICAL FIX: Double-escape all backslashes for Groovy/sed compatibility.
-                    // s/\\r//g: Removes Windows carriage returns.
-                    // /^\\s*$/d: Removes empty lines (where \s* means zero or more whitespace characters).
-                    sh '''
-                        sed -i 's/\\r//g; s/"//g; /^\\s*$/d; s/^[[:space:]]*//; s/[[:space:]]*$//' .kube/config
-                    '''
-                    
-                    sh "chmod 600 .kube/config"
-
-                    // Set the KUBECONFIG environment variable (runs inside the kubectl container)
-                    withEnv(["KUBECONFIG=.kube/config", "IMAGE_URL=${DOCKER_IMAGE_NAME}:${BUILD_ID}"]) {
-                        sh "echo Deploying image ${IMAGE_URL} to Kubernetes..."
+                script {
+                    // FIX: Use withCredentials([file(...)]). This binds the Secret File 
+                    // to the KUBECONFIG environment variable, ensuring a clean, valid file.
+                    withCredentials([file(credentialsId: env.KUBE_CONFIG_CREDS, variable: 'KUBECONFIG')]) {
                         
-                        // Update the K8s manifest with the new image tag
-                        sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${IMAGE_URL}|g' kubernetes-deployment.yaml"
+                        // The KUBECONFIG environment variable now points to the temporary, correct Kubeconfig file.
+                        sh '''
+                            echo "Deploying image ${DOCKER_IMAGE_NAME}:${BUILD_ID} to Kubernetes..."
+                            
+                            # 1. Update the image URL in the manifest
+                            sed -i "s|PLACEHOLDER_IMAGE_URL|${DOCKER_IMAGE_NAME}:${BUILD_ID}|g" kubernetes-deployment.yaml
 
-                        // Apply the deployment (kubectl is now available)
-                        sh "kubectl apply -f kubernetes-deployment.yaml"
-                        
-                        echo "Deployment command executed successfully."
+                            # 2. Apply the deployment. kubectl automatically uses the KUBECONFIG env var.
+                            kubectl apply -f kubernetes-deployment.yaml
+                            
+                            echo "Deployment command executed successfully."
+                        '''
                     }
                 }
             }
