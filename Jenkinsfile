@@ -31,70 +31,145 @@ pipeline {
                     
                     echo "=== EXTRACTING CERTIFICATES ==="
                     
-                    # Extract certificates
+                    # Robust extraction function
                     extract_base64_clean() {
                         local key="\$1"
                         local output="\$2"
                         
                         echo "Extracting \$key..."
+                        # Multiple extraction methods to ensure we get clean base64
                         data=\$(grep "\$key" kubeconfig_unix.yaml | sed "s/.*\$key//" | tr -d '[:space:]' | tr -d '\\r')
                         
                         if [ -n "\$data" ]; then
-                            echo "\$data" | base64 -d > "\$output"
-                            if [ \$? -eq 0 ] && [ -s "\$output" ]; then
-                                echo "✓ Successfully extracted \$key"
-                                return 0
+                            echo "Base64 data length: \${#data}"
+                            # Try to decode and check if it's valid
+                            if echo "\$data" | base64 -d > "\$output" 2>/dev/null; then
+                                if [ -s "\$output" ]; then
+                                    echo "✓ Successfully extracted \$key"
+                                    return 0
+                                fi
                             fi
                         fi
+                        echo "✗ Failed to extract \$key"
                         return 1
                     }
 
                     # Extract certificates
                     extract_base64_clean "certificate-authority-data:" ca.crt
                     extract_base64_clean "client-certificate-data:" client.crt
-                    extract_base64_clean "client-key-data:" client.key.rsa
+                    extract_base64_clean "client-key-data:" client.key.raw
 
-                    echo "=== CONVERTING RSA PRIVATE KEY TO PKCS#8 FORMAT ==="
-                    # Convert RSA key to PKCS#8 format
-                    if [ -f "client.key.rsa" ] && head -1 client.key.rsa | grep -q "BEGIN RSA PRIVATE KEY"; then
-                        echo "Converting RSA private key to PKCS#8 format..."
-                        openssl pkcs8 -topk8 -nocrypt -in client.key.rsa -out client.key
-                        echo "✓ RSA key converted to PKCS#8 format"
-                        rm -f client.key.rsa
-                    else
-                        echo "Key is already in PKCS#8 format or conversion not needed"
-                        mv client.key.rsa client.key 2>/dev/null || true
+                    echo "=== ANALYZING EXTRACTED KEY ==="
+                    if [ -f "client.key.raw" ]; then
+                        echo "Raw key file info:"
+                        ls -la client.key.raw
+                        echo "First few lines of key:"
+                        head -5 client.key.raw
+                        echo "File type:"
+                        file client.key.raw
                     fi
 
-                    echo "=== VERIFYING CERTIFICATES ==="
-                    echo "File verification:"
-                    for file in ca.crt client.crt client.key; do
-                        if [ -f "\$file" ] && [ -s "\$file" ]; then
-                            echo "✓ \$file: \$(stat -c%s \$file) bytes"
-                            echo "  First line: \$(head -1 \$file)"
+                    echo "=== CONVERTING PRIVATE KEY FORMAT ==="
+                    # Multiple conversion methods
+                    
+                    # Method 1: Try openssl conversion
+                    if [ -f "client.key.raw" ] && head -1 client.key.raw | grep -q "BEGIN RSA PRIVATE KEY"; then
+                        echo "Attempting openssl RSA to PKCS#8 conversion..."
+                        if openssl pkcs8 -topk8 -nocrypt -in client.key.raw -out client.key 2>/dev/null; then
+                            echo "✓ Successfully converted RSA key to PKCS#8 using openssl"
                         else
-                            echo "✗ \$file: missing or empty"
-                        fi
-                    done
+                            echo "openssl conversion failed, trying alternative methods..."
+                            
+                            # Method 2: Use Python cryptography library
+                            python3 << 'EOF'
+import base64
+import os
 
-                    # Verify the key is in correct format
-                    echo "=== KEY FORMAT VERIFICATION ==="
+try:
+    # Read the raw key file
+    with open('client.key.raw', 'rb') as f:
+        key_data = f.read()
+    
+    # Try to decode as PEM
+    if b'BEGIN RSA PRIVATE KEY' in key_data:
+        print("Found RSA private key, converting to PKCS#8...")
+        
+        # Import RSA and convert
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.backends import default_backend
+        
+        private_key = serialization.load_pem_private_key(
+            key_data,
+            password=None,
+            backend=default_backend()
+        )
+        
+        # Convert to PKCS#8
+        pkcs8_key = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        
+        with open('client.key', 'wb') as f:
+            f.write(pkcs8_key)
+        
+        print("✓ Successfully converted RSA key to PKCS#8 using Python")
+        
+    elif b'BEGIN PRIVATE KEY' in key_data:
+        print("Key is already in PKCS#8 format")
+        os.rename('client.key.raw', 'client.key')
+    else:
+        print("Unknown key format, using as-is")
+        os.rename('client.key.raw', 'client.key')
+        
+except Exception as e:
+    print(f"Error converting key: {e}")
+    # Fallback: use the raw key as-is
+    try:
+        os.rename('client.key.raw', 'client.key')
+        print("Using raw key as fallback")
+    except:
+        pass
+EOF
+                        fi
+                    else
+                        echo "Key doesn't appear to be RSA format, using as-is"
+                        mv client.key.raw client.key 2>/dev/null || true
+                    fi
+
+                    echo "=== FINAL KEY VERIFICATION ==="
                     if [ -f "client.key" ]; then
-                        key_format=\$(head -1 client.key)
-                        case "\$key_format" in
-                            "-----BEGIN RSA PRIVATE KEY-----")
-                                echo "✗ Key is still in RSA format - conversion failed"
-                                ;;
-                            "-----BEGIN PRIVATE KEY-----")
-                                echo "✓ Key is in PKCS#8 format"
-                                ;;
-                            "-----BEGIN ENCRYPTED PRIVATE KEY-----")
-                                echo "✗ Key is encrypted"
-                                ;;
-                            *)
-                                echo "? Key format unknown: \$key_format"
-                                ;;
-                        esac
+                        echo "Final key file:"
+                        ls -la client.key
+                        echo "Key format:"
+                        head -2 client.key
+                        echo "Key validation:"
+                        if openssl pkey -in client.key -noout -check 2>/dev/null; then
+                            echo "✓ Key is valid"
+                        else
+                            echo "✗ Key validation failed"
+                        fi
+                    else
+                        echo "✗ No client key file created"
+                    fi
+
+                    echo "=== VERIFYING CERTIFICATE-KEY PAIR ==="
+                    if [ -f "client.crt" ] && [ -f "client.key" ]; then
+                        echo "Verifying certificate and key compatibility..."
+                        openssl x509 -noout -modulus -in client.crt 2>/dev/null | openssl md5 > /tmp/cert.md5 2>/dev/null
+                        openssl pkey -in client.key -noout -modulus 2>/dev/null | openssl md5 > /tmp/key.md5 2>/dev/null || \
+                        openssl rsa -in client.key -noout -modulus 2>/dev/null | openssl md5 > /tmp/key.md5 2>/dev/null
+                        
+                        if [ -f "/tmp/cert.md5" ] && [ -f "/tmp/key.md5" ]; then
+                            if diff /tmp/cert.md5 /tmp/key.md5 > /dev/null; then
+                                echo "✓ Certificate and key are compatible"
+                            else
+                                echo "✗ Certificate and key do not match!"
+                            fi
+                        else
+                            echo "? Could not verify certificate-key compatibility"
+                        fi
                     fi
 
                     echo "=== CREATING CLEAN KUBECONFIG ==="
@@ -135,28 +210,21 @@ EOF
 
                 echo "=== TESTING KUBERNETES CONNECTION ==="
                 
-                # Test with verbose output to see what's happening
-                echo "--- Testing connection with verbose output ---"
-                ./kubectl --v=3 cluster-info --insecure-skip-tls-verify 2>&1 | head -20
-                
-                # Simple connection test
-                echo "--- Simple connection test ---"
+                # Test connection with multiple approaches
+                echo "--- Testing basic connection ---"
                 if ./kubectl get nodes --insecure-skip-tls-verify 2>/dev/null; then
                     echo "✓ Successfully connected to Kubernetes!"
                 else
-                    echo "✗ Connection failed"
-                    echo "Debug: Checking certificate and key compatibility..."
+                    echo "Connection failed, trying with more debug info..."
                     
-                    # Verify certificate and key match
-                    openssl x509 -noout -modulus -in client.crt | openssl md5 > /tmp/cert.md5
-                    openssl rsa -noout -modulus -in client.key 2>/dev/null | openssl md5 > /tmp/key.md5 || \
-                    openssl pkcs8 -in client.key -nocrypt -topk8 -out /dev/null 2>/dev/null && \
-                    openssl pkey -in client.key -noout -modulus | openssl md5 > /tmp/key.md5
+                    # Test with verbose output
+                    echo "--- Verbose connection test ---"
+                    ./kubectl --v=3 get nodes --insecure-skip-tls-verify 2>&1 | head -30
                     
-                    if diff /tmp/cert.md5 /tmp/key.md5 > /dev/null; then
-                        echo "✓ Certificate and key are compatible"
-                    else
-                        echo "✗ Certificate and key do not match!"
+                    # Check if it's a certificate issue
+                    echo "--- Certificate validation ---"
+                    if [ -f "client.key" ]; then
+                        echo "Client key format: \$(head -1 client.key)"
                     fi
                     
                     exit 1
@@ -174,15 +242,12 @@ EOF
                 echo "=== DEPLOYING APPLICATION ==="
                 
                 # Deploy application files
-                if [ -f "deployment.yaml" ]; then
-                    echo "Applying deployment.yaml..."
-                    ./kubectl apply -f deployment.yaml --insecure-skip-tls-verify
-                fi
-                
-                if [ -f "service.yaml" ]; then
-                    echo "Applying service.yaml..."
-                    ./kubectl apply -f service.yaml --insecure-skip-tls-verify
-                fi
+                for file in deployment.yaml service.yaml; do
+                    if [ -f "\$file" ]; then
+                        echo "Applying \$file..."
+                        ./kubectl apply -f \$file --insecure-skip-tls-verify
+                    fi
+                done
                 
                 echo "=== VERIFYING DEPLOYMENT ==="
                 ./kubectl get deployments,services,pods --insecure-skip-tls-verify
@@ -197,7 +262,7 @@ EOF
         always {
             sh '''
             echo "=== CLEANING UP ==="
-            rm -f ca.crt client.crt client.key client.key.rsa kubeconfig_unix.yaml kubeconfig_clean.yaml /tmp/cert.md5 /tmp/key.md5
+            rm -f ca.crt client.crt client.key client.key.raw client.key.rsa kubeconfig_unix.yaml kubeconfig_clean.yaml /tmp/cert.md5 /tmp/key.md5
             '''
         }
     }
