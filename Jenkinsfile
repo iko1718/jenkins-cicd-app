@@ -38,7 +38,6 @@ pipeline {
                     
                     echo "--- Decoding and cleaning up Kubeconfig ---"
                     
-                    # --- ROBUST DECODING START ---
                     # Function to reliably extract and decode Base64 data
                     extract_and_decode() {
                         # Isolates the Base64 string, removes ALL whitespace (including spaces and newlines) for clean decoding, and saves to file.
@@ -55,16 +54,15 @@ pipeline {
                     extract_and_decode 'client-key-data:' client.key
                     
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
-                    # --- ROBUST DECODING END ---
                     
                     # 3. Create a NEW KUBECONFIG using file paths and the NEW EXTERNAL IP.
-                    # !!! IMPORTANT: REPLACE 'YOUR_EXTERNAL_K8S_IP' WITH THE ROUTABLE IP ADDRESS !!!
+                    # This uses the provided VM IP: 104.214.168.195
                     cat << EOF > $KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
 - cluster:
     certificate-authority: $PWD/ca.crt
-    server: https://YOUR_EXTERNAL_K8S_IP:8443
+    server: https://104.214.168.195:8443
   name: minikube
 contexts:
 - context:
@@ -88,12 +86,12 @@ EOF
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
                     
-                    # This test will only succeed if 'YOUR_EXTERNAL_K8S_IP' is correct and routable.
+                    # This test will now attempt to connect to the provided VM IP.
                     kubectl cluster-info
                     
                     # --- DEPLOYMENT STEP ---
                     echo "--- Starting Deployment Logic ---"
-                    # kubectl apply -f my-deployment.yaml
+                    # Add your actual deployment commands here, e.g., kubectl apply -f deployment.yaml
 
                     echo "Deployment logic completed."
                     '''
