@@ -5,9 +5,6 @@ pipeline {
     // The main pipeline runs on the Jenkins built-in agent
     agent any
 
-    // Note: The 'tools' block has been removed to fix the Groovy compilation error.
-    // Instead, we define the necessary Docker container inside the Deploy stage agent block.
-
     // Define environment variables and credential IDs
     environment {
         // Your Docker Hub repo name
@@ -95,15 +92,12 @@ pipeline {
 
         // Stage 4: Deploy to Kubernetes
         stage('Deploy to K8s') {
-            // FIX: Run this stage inside the kubectl Docker image. 
-            // This guarantees the 'kubectl' command is available and uses the correct workspace mount.
+            // FIX: Run this stage inside the kubectl Docker image, disabling the default ENTRYPOINT
             agent {
                 docker {
                     image 'bitnami/kubectl:latest'
-                    // We need to mount the Docker socket so that the 'kubectl' container 
-                    // can potentially interact with the Docker daemon if needed, 
-                    // though for simple apply it might not be strictly necessary.
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                    // This command disables the image's ENTRYPOINT and ensures the workspace is mounted correctly.
+                    args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
             
@@ -115,7 +109,7 @@ pipeline {
                     // Write the secret content to a temp file
                     writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // Corrected cleanup with single quotes
+                    // Corrected cleanup with single quotes (Groovy fix)
                     sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config.temp'
 
                     // Finalize config file
