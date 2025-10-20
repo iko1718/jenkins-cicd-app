@@ -64,20 +64,18 @@ pipeline {
                         // Write the Kubeconfig secret content to a temporary file
                         writeFile file: '.kube/config.temp', text: "$KUBECFG_CONTENT"
 
-                        // --- FINAL, ROBUST KUBECONFIG CLEANUP ---
-                        sh """
+                        // --- FINAL, ROBUST KUBECONFIG CLEANUP USING TRIPLE SINGLE QUOTES ---
+                        // Triple single quotes (''') prevents Groovy from attempting to interpolate '$'
+                        sh '''
                             echo "Performing aggressive cleanup on Kubeconfig file..."
                             
-                            # 1. Use 'tr' to strip ALL non-printable control characters and carriage returns (CR)
-                            tr -cd '[:print:]\\n' < .kube/config.temp > .kube/config
-                            
-                            # 2. Use 'sed' on the final file to remove ALL blank lines and all leading/trailing whitespace
-                            # The dollar sign is now ESCAPED (\$) to prevent Groovy compilation errors.
-                            sed -i -e '/^\\$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\\$//' .kube/config
+                            # 1. Strip non-printable control characters (tr), remove blank lines (sed), 
+                            # and remove leading/trailing whitespace (sed). The literal '$' is safe here.
+                            cat .kube/config.temp | tr -cd '[:print:]\n' | sed -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' > .kube/config
                             
                             # Clean up temporary file
                             rm .kube/config.temp
-                        """
+                        '''
 
                         sh 'chmod 600 .kube/config'
 
