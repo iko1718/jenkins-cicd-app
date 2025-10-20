@@ -92,11 +92,10 @@ pipeline {
 
         // Stage 4: Deploy to Kubernetes
         stage('Deploy to K8s') {
-            // FIX: Run this stage inside the kubectl Docker image, disabling the default ENTRYPOINT
+            // Run this stage inside the kubectl Docker image
             agent {
                 docker {
                     image 'bitnami/kubectl:latest'
-                    // This command disables the image's ENTRYPOINT and ensures the workspace is mounted correctly.
                     args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
@@ -109,12 +108,17 @@ pipeline {
                     // Write the secret content to a temp file
                     writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // FIX 1: Remove all leading/trailing whitespace and blank lines (using safe sed)
-                    sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config.temp'
-
-                    // FIX 2: **CORRECTED QUOTING** Use 'tr' to remove all double quotes (") 
-                    // This is the common cause of the JSON parse error in Kubeconfig.
-                    sh "tr -d '\"' < .kube/config.temp > .kube/config.temp.tmp && mv .kube/config.temp.tmp .kube/config.temp"
+                    // *** NEW ROBUST CLEANUP STEP ***
+                    // Use a multiline shell block to ensure sed and tr commands (with file redirection) execute atomically 
+                    // and correctly, preventing shell fragmentation errors.
+                    sh """
+                        # 1. Remove all empty lines, leading/trailing whitespace (safe sed)
+                        sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config.temp
+                        
+                        # 2. Use 'tr' to remove all double quotes (") which are the common corruption cause
+                        tr -d '"' < .kube/config.temp > .kube/config.temp.tmp
+                        mv .kube/config.temp.tmp .kube/config.temp
+                    """
 
                     // Finalize config file
                     sh "mv .kube/config.temp .kube/config"
