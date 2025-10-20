@@ -35,22 +35,21 @@ pipeline {
                     # 2. Define the path for the new, CLEAN kubeconfig file
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
 
-                    echo "--- Decoding and cleaning up Kubeconfig (Final Variable Capture Fix) ---"
+                    echo "--- Decoding and cleaning up Kubeconfig (Final Newline Fix) ---"
 
                     # --- MOST ROBUST DECODING STEPS ---
-                    # The value is captured into a shell variable first, forcing the shell to execute the 
-                    # pipe chain correctly. 'tr -d ' ' removes all whitespace, including the leading space.
+                    # Capture value, then pipe through 'tr -d "\\n "' to remove ALL newlines and spaces.
 
                     # 1. Decode CA Certificate 
-                    CA_DATA=\$(grep 'certificate-authority-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ')
+                    CA_DATA=\$(grep 'certificate-authority-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d "\\n ")
                     echo \$CA_DATA | base64 -d > ca.crt
 
                     # 2. Decode Client Certificate
-                    CLIENT_CERT_DATA=\$(grep 'client-certificate-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ')
+                    CLIENT_CERT_DATA=\$(grep 'client-certificate-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d "\\n ")
                     echo \$CLIENT_CERT_DATA | base64 -d > client.crt
 
                     # 3. Decode Client Key
-                    CLIENT_KEY_DATA=\$(grep 'client-key-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ')
+                    CLIENT_KEY_DATA=\$(grep 'client-key-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d "\\n ")
                     echo \$CLIENT_KEY_DATA | base64 -d > client.key
 
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
