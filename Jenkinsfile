@@ -12,7 +12,7 @@ pipeline {
         
         // Credential IDs configured in Jenkins
         DOCKER_USER_CREDS = 'dockerhub-creds' // ID for Docker Hub username/password
-        // CRITICAL CHANGE: This must now be the ID of a "Secret file" credential
+        // CRITICAL: This must be the ID of the "Secret file" credential named 'kubeconfig'
         KUBE_CONFIG_CREDS = 'kubeconfig' 
     }
 
@@ -93,21 +93,19 @@ pipeline {
 
         // Stage 4: Deploy to Kubernetes
         stage('Deploy to K8s') {
-            // Run this stage inside the kubectl Docker image
+            // CRITICAL FIX: Add --entrypoint='' to disable the Bitnami image's default entrypoint.
             agent {
                 docker {
                     image 'bitnami/kubectl:latest'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                    args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
             
             steps {
                 script {
-                    // FIX: Use withCredentials([file(...)]). This binds the Secret File 
-                    // to the KUBECONFIG environment variable, ensuring a clean, valid file.
+                    // Uses file() credential binding for a clean, reliable Kubeconfig file.
                     withCredentials([file(credentialsId: env.KUBE_CONFIG_CREDS, variable: 'KUBECONFIG')]) {
                         
-                        // The KUBECONFIG environment variable now points to the temporary, correct Kubeconfig file.
                         sh '''
                             echo "Deploying image ${DOCKER_IMAGE_NAME}:${BUILD_ID} to Kubernetes..."
                             
@@ -115,6 +113,7 @@ pipeline {
                             sed -i "s|PLACEHOLDER_IMAGE_URL|${DOCKER_IMAGE_NAME}:${BUILD_ID}|g" kubernetes-deployment.yaml
 
                             # 2. Apply the deployment. kubectl automatically uses the KUBECONFIG env var.
+                            # KUBECONFIG variable is set by withCredentials to the correct file path.
                             kubectl apply -f kubernetes-deployment.yaml
                             
                             echo "Deployment command executed successfully."
