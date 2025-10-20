@@ -44,25 +44,69 @@ pipeline {
                             passwordVariable: 'DOCKER_PASS'
                         )
                     ]) {
-                        // Use raw 'sh' commands to force the simple image name, bypassing FQDN resolution.
-                        
                         // 1. Perform authenticated login using standard input
                         sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
                         
-                        // 2. Push the version-specific tag
-                        retry(3) {
-                            echo "Attempting versioned docker push (Attempt ${currentBuild.number})..."
-                            // Pushing using the short name is key to avoiding the 504 error
-                            sh "docker push ${DOCKER_IMAGE}:${imageTag}" 
-                        }
-
-                        // 3. Tag the image as 'latest'
-                        sh "docker tag ${DOCKER_IMAGE}:${imageTag} ${DOCKER_IMAGE}:latest"
+                        // Enhanced retry logic with exponential backoff
+                        def maxRetries = 5
+                        def retryCount = 0
+                        def pushSuccess = false
                         
-                        // 4. Push 'latest'
-                        retry(3) {
-                            echo "Attempting 'latest' docker push (Attempt ${currentBuild.number})..."
-                            sh "docker push ${DOCKER_IMAGE}:latest"
+                        // --- Push Versioned Tag ---
+                        while (!pushSuccess && retryCount < maxRetries) {
+                            try {
+                                retryCount++
+                                echo "Attempt ${retryCount}/${maxRetries}: Pushing ${DOCKER_IMAGE}:${imageTag}"
+                                
+                                // Add delay between retries (exponential backoff: 10, 20, 40, 80 seconds)
+                                if (retryCount > 1) {
+                                    def delaySeconds = Math.pow(2, retryCount - 2) * 10
+                                    echo "Waiting ${delaySeconds} seconds before retry..."
+                                    sleep time: delaySeconds.toInteger(), unit: 'SECONDS'
+                                }
+                                
+                                sh "docker push ${DOCKER_IMAGE}:${imageTag}"
+                                pushSuccess = true
+                                echo "Push successful on attempt ${retryCount}"
+                                
+                            } catch (Exception e) {
+                                echo "Push attempt ${retryCount} failed: ${e.getMessage()}"
+                                if (retryCount >= maxRetries) {
+                                    error("Failed to push image after ${maxRetries} attempts")
+                                }
+                            }
+                        }
+                        
+                        // --- Tag and push latest only if versioned push succeeded ---
+                        if (pushSuccess) {
+                            sh "docker tag ${DOCKER_IMAGE}:${imageTag} ${DOCKER_IMAGE}:latest"
+                            
+                            // Push latest with same retry logic
+                            def latestSuccess = false
+                            retryCount = 0
+                            
+                            while (!latestSuccess && retryCount < maxRetries) {
+                                try {
+                                    retryCount++
+                                    echo "Attempt ${retryCount}/${maxRetries}: Pushing ${DOCKER_IMAGE}:latest"
+                                    
+                                    if (retryCount > 1) {
+                                        def delaySeconds = Math.pow(2, retryCount - 2) * 10
+                                        echo "Waiting ${delaySeconds} seconds before retry..."
+                                        sleep time: delaySeconds.toInteger(), unit: 'SECONDS'
+                                    }
+                                    
+                                    sh "docker push ${DOCKER_IMAGE}:latest"
+                                    latestSuccess = true
+                                    echo "Latest push successful on attempt ${retryCount}"
+                                    
+                                } catch (Exception e) {
+                                    echo "Latest push attempt ${retryCount} failed: ${e.getMessage()}"
+                                    if (retryCount >= maxRetries) {
+                                        echo "Warning: Failed to push 'latest' tag, but versioned tag was successful. Continuing pipeline..."
+                                    }
+                                }
+                            }
                         }
                     }
                 }
