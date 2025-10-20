@@ -35,19 +35,19 @@ pipeline {
                     # 2. Define the path for the new, CLEAN kubeconfig file
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
                     
-                    echo "--- Decoding and cleaning up Kubeconfig ---"
+                    echo "--- Decoding and cleaning up Kubeconfig (Final Decoding Fix) ---"
                     
-                    # --- ROBUST DECODING STEPS ---
-                    # Use awk to reliably extract the base64 string (field 2) and pipe it to base64 -d
+                    # --- ROBUST DECODING STEPS (Using grep and cut to avoid awk quoting issues) ---
+                    # Grep for the line, cut by the space delimiter (' '), and take the second field.
                     
                     # 1. Decode CA Certificate 
-                    awk '/certificate-authority-data:/ {print $2}' $KUBECONFIG_SOURCE | base64 -d > ca.crt
+                    grep 'certificate-authority-data:' $KUBECONFIG_SOURCE | cut -d ' ' -f 2 | base64 -d > ca.crt
                     
                     # 2. Decode Client Certificate
-                    awk '/client-certificate-data:/ {print $2}' $KUBECONFIG_SOURCE | base64 -d > client.crt
+                    grep 'client-certificate-data:' $KUBECONFIG_SOURCE | cut -d ' ' -f 2 | base64 -d > client.crt
                     
                     # 3. Decode Client Key
-                    awk '/client-key-data:/ {print $2}' $KUBECONFIG_SOURCE | base64 -d > client.key
+                    grep 'client-key-data:' $KUBECONFIG_SOURCE | cut -d ' ' -f 2 | base64 -d > client.key
                     
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
                     
