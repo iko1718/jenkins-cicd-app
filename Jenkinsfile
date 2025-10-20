@@ -5,12 +5,15 @@ node {
         checkout scm
     }
 
-    stage('Build Image') {
-        docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
-            echo "Building Docker image: ${imageTag}"
-            sh "docker build -t ${imageTag} ."
-        }
-    }
+   stage('Build Image') {
+        docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
+            withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) { // ⬅️ ADD THIS LINE
+                sh 'mkdir -p .docker' // ⬅️ AND THIS LINE
+                echo "Building Docker image: ${imageTag}"
+                sh "docker build -t ${imageTag} ."
+            }
+        }
+    }
 
     stage('Push Image') {
         docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
