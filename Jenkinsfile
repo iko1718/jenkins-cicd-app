@@ -14,7 +14,7 @@ pipeline {
             }
         }
 
-        stage('Extract Certificates with Windows Line Ending Fix') {
+        stage('Extract and Convert Certificates') {
             steps {
                 withCredentials([
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
@@ -25,116 +25,77 @@ pipeline {
 
                     echo "=== FIXING WINDOWS LINE ENDINGS AND EXTRACTING CERTIFICATES ==="
                     
-                    # Step 1: Convert Windows line endings to Unix and extract
+                    # Step 1: Convert Windows line endings to Unix
                     echo "Converting Windows CRLF to Unix LF..."
                     sed 's/\\r\$//' "\$KUBECONFIG_SOURCE" > kubeconfig_unix.yaml
                     
-                    echo "=== EXTRACTING CERTIFICATES FROM CLEANED FILE ==="
+                    echo "=== EXTRACTING CERTIFICATES ==="
                     
-                    # Method 1: Use the cleaned file with proper extraction
+                    # Extract certificates
                     extract_base64_clean() {
                         local key="\$1"
                         local output="\$2"
                         
                         echo "Extracting \$key..."
-                        
-                        # Get the base64 data and remove ALL whitespace and control characters
                         data=\$(grep "\$key" kubeconfig_unix.yaml | sed "s/.*\$key//" | tr -d '[:space:]' | tr -d '\\r')
                         
                         if [ -n "\$data" ]; then
-                            echo "Data length: \${#data}"
                             echo "\$data" | base64 -d > "\$output"
                             if [ \$? -eq 0 ] && [ -s "\$output" ]; then
                                 echo "✓ Successfully extracted \$key"
                                 return 0
-                            else
-                                echo "✗ Failed to decode \$key"
-                                return 1
                             fi
-                        else
-                            echo "✗ No data found for \$key"
-                            return 1
                         fi
+                        return 1
                     }
 
-                    # Extract certificates using the cleaned method
-                    if extract_base64_clean "certificate-authority-data:" ca.crt; then
-                        echo "CA certificate extracted"
+                    # Extract certificates
+                    extract_base64_clean "certificate-authority-data:" ca.crt
+                    extract_base64_clean "client-certificate-data:" client.crt
+                    extract_base64_clean "client-key-data:" client.key.rsa
+
+                    echo "=== CONVERTING RSA PRIVATE KEY TO PKCS#8 FORMAT ==="
+                    # Convert RSA key to PKCS#8 format
+                    if [ -f "client.key.rsa" ] && head -1 client.key.rsa | grep -q "BEGIN RSA PRIVATE KEY"; then
+                        echo "Converting RSA private key to PKCS#8 format..."
+                        openssl pkcs8 -topk8 -nocrypt -in client.key.rsa -out client.key
+                        echo "✓ RSA key converted to PKCS#8 format"
+                        rm -f client.key.rsa
                     else
-                        # Fallback: try awk method on cleaned file
-                        echo "Trying fallback extraction..."
-                        grep "certificate-authority-data" kubeconfig_unix.yaml | awk '{print \$2}' | tr -d '\\r' | base64 -d > ca.crt
+                        echo "Key is already in PKCS#8 format or conversion not needed"
+                        mv client.key.rsa client.key 2>/dev/null || true
                     fi
 
-                    if extract_base64_clean "client-certificate-data:" client.crt; then
-                        echo "Client certificate extracted"
-                    else
-                        grep "client-certificate-data" kubeconfig_unix.yaml | awk '{print \$2}' | tr -d '\\r' | base64 -d > client.crt
-                    fi
-
-                    if extract_base64_clean "client-key-data:" client.key; then
-                        echo "Client key extracted"
-                    else
-                        grep "client-key-data" kubeconfig_unix.yaml | awk '{print \$2}' | tr -d '\\r' | base64 -d > client.key
-                    fi
-
-                    echo "=== VERIFYING EXTRACTED FILES ==="
-                    echo "File sizes:"
-                    ls -la ca.crt client.crt client.key 2>/dev/null || echo "Some files missing"
-                    
-                    echo "File contents (first line):"
-                    [ -f "ca.crt" ] && head -1 ca.crt || echo "ca.crt missing"
-                    [ -f "client.crt" ] && head -1 client.crt || echo "client.crt missing"
-                    [ -f "client.key" ] && head -1 client.key || echo "client.key missing"
-
-                    # If files are empty, try one more approach
-                    if [ ! -s "ca.crt" ] || [ ! -s "client.crt" ] || [ ! -s "client.key" ]; then
-                        echo "=== USING ROBUST EXTRACTION METHOD ==="
-                        # Most robust method: handle any formatting issues
-                        python3 << 'EOF'
-import base64
-import re
-
-def extract_base64(key, filename):
-    with open('kubeconfig_unix.yaml', 'r') as f:
-        content = f.read()
-    
-    # Find the line with the key
-    pattern = rf'{key}:\\s*([^\\n]+)'
-    match = re.search(pattern, content)
-    
-    if match:
-        b64_data = match.group(1).strip()
-        # Remove any remaining whitespace or special characters
-        b64_data = re.sub(r'\\s+', '', b64_data)
-        
-        try:
-            decoded = base64.b64decode(b64_data)
-            with open(filename, 'wb') as f:
-                f.write(decoded)
-            print(f"Successfully extracted {key}")
-            return True
-        except Exception as e:
-            print(f"Failed to decode {key}: {e}")
-            return False
-    else:
-        print(f"Key {key} not found")
-        return False
-
-extract_base64('certificate-authority-data', 'ca.crt')
-extract_base64('client-certificate-data', 'client.crt')  
-extract_base64('client-key-data', 'client.key')
-EOF
-                    fi
-
-                    echo "=== FINAL VERIFICATION ==="
+                    echo "=== VERIFYING CERTIFICATES ==="
+                    echo "File verification:"
                     for file in ca.crt client.crt client.key; do
                         if [ -f "\$file" ] && [ -s "\$file" ]; then
-                            echo "✓ \$file: \$(stat -c%s \$file) bytes, starts with: \$(head -1 \$file)"
+                            echo "✓ \$file: \$(stat -c%s \$file) bytes"
+                            echo "  First line: \$(head -1 \$file)"
                         else
                             echo "✗ \$file: missing or empty"
                         fi
                     done
+
+                    # Verify the key is in correct format
+                    echo "=== KEY FORMAT VERIFICATION ==="
+                    if [ -f "client.key" ]; then
+                        key_format=\$(head -1 client.key)
+                        case "\$key_format" in
+                            "-----BEGIN RSA PRIVATE KEY-----")
+                                echo "✗ Key is still in RSA format - conversion failed"
+                                ;;
+                            "-----BEGIN PRIVATE KEY-----")
+                                echo "✓ Key is in PKCS#8 format"
+                                ;;
+                            "-----BEGIN ENCRYPTED PRIVATE KEY-----")
+                                echo "✗ Key is encrypted"
+                                ;;
+                            *)
+                                echo "? Key format unknown: \$key_format"
+                                ;;
+                        esac
+                    fi
 
                     echo "=== CREATING CLEAN KUBECONFIG ==="
                     cat << EOF > \$KUBECONFIG_CLEAN
@@ -160,13 +121,13 @@ users:
     client-key: \$PWD/client.key
 EOF
 
-                    echo "Clean kubeconfig created"
+                    echo "✓ Clean kubeconfig created"
                     """
                 }
             }
         }
 
-        stage('Test and Deploy') {
+        stage('Test Connection') {
             steps {
                 sh """
                 export PATH=\$PATH:\$PWD
@@ -174,28 +135,59 @@ EOF
 
                 echo "=== TESTING KUBERNETES CONNECTION ==="
                 
-                # Test connection
-                if ./kubectl cluster-info --insecure-skip-tls-verify; then
-                    echo "✓ Successfully connected to Kubernetes"
-                    
-                    echo "=== DEPLOYING APPLICATION ==="
-                    if [ -f "deployment.yaml" ]; then
-                        ./kubectl apply -f deployment.yaml --insecure-skip-tls-verify
-                    fi
-                    if [ -f "service.yaml" ]; then
-                        ./kubectl apply -f service.yaml --insecure-skip-tls-verify
-                    fi
-                    
-                    echo "=== VERIFYING DEPLOYMENT ==="
-                    ./kubectl get deployments,services,pods --insecure-skip-tls-verify
-                    
-                    echo "🎉 PIPELINE COMPLETED SUCCESSFULLY!"
+                # Test with verbose output to see what's happening
+                echo "--- Testing connection with verbose output ---"
+                ./kubectl --v=3 cluster-info --insecure-skip-tls-verify 2>&1 | head -20
+                
+                # Simple connection test
+                echo "--- Simple connection test ---"
+                if ./kubectl get nodes --insecure-skip-tls-verify 2>/dev/null; then
+                    echo "✓ Successfully connected to Kubernetes!"
                 else
-                    echo "✗ Failed to connect to Kubernetes"
-                    echo "Debug info:"
-                    ./kubectl version --client --insecure-skip-tls-verify
+                    echo "✗ Connection failed"
+                    echo "Debug: Checking certificate and key compatibility..."
+                    
+                    # Verify certificate and key match
+                    openssl x509 -noout -modulus -in client.crt | openssl md5 > /tmp/cert.md5
+                    openssl rsa -noout -modulus -in client.key 2>/dev/null | openssl md5 > /tmp/key.md5 || \
+                    openssl pkcs8 -in client.key -nocrypt -topk8 -out /dev/null 2>/dev/null && \
+                    openssl pkey -in client.key -noout -modulus | openssl md5 > /tmp/key.md5
+                    
+                    if diff /tmp/cert.md5 /tmp/key.md5 > /dev/null; then
+                        echo "✓ Certificate and key are compatible"
+                    else
+                        echo "✗ Certificate and key do not match!"
+                    fi
+                    
                     exit 1
                 fi
+                """
+            }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                sh """
+                export PATH=\$PATH:\$PWD
+                export KUBECONFIG=\$PWD/kubeconfig_clean.yaml
+
+                echo "=== DEPLOYING APPLICATION ==="
+                
+                # Deploy application files
+                if [ -f "deployment.yaml" ]; then
+                    echo "Applying deployment.yaml..."
+                    ./kubectl apply -f deployment.yaml --insecure-skip-tls-verify
+                fi
+                
+                if [ -f "service.yaml" ]; then
+                    echo "Applying service.yaml..."
+                    ./kubectl apply -f service.yaml --insecure-skip-tls-verify
+                fi
+                
+                echo "=== VERIFYING DEPLOYMENT ==="
+                ./kubectl get deployments,services,pods --insecure-skip-tls-verify
+                
+                echo "🎉 PIPELINE COMPLETED SUCCESSFULLY!"
                 """
             }
         }
@@ -205,7 +197,7 @@ EOF
         always {
             sh '''
             echo "=== CLEANING UP ==="
-            rm -f ca.crt client.crt client.key kubeconfig_unix.yaml kubeconfig_clean.yaml
+            rm -f ca.crt client.crt client.key client.key.rsa kubeconfig_unix.yaml kubeconfig_clean.yaml /tmp/cert.md5 /tmp/key.md5
             '''
         }
     }
