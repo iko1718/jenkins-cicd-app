@@ -89,12 +89,11 @@ pipeline {
             }
         }
 
-        // Stage 4: Deploy to Kubernetes (Fixed Groovy parsing issue)
+        // Stage 4: Deploy to Kubernetes
         stage('Deploy to K8s') {
-            // Run on a clean node/workspace (assuming your Jenkins VM has kubectl installed)
-            agent {
-                node { label 'master' } 
-            }
+            // FIX: Using 'agent any' to ensure the built-in Jenkins executor runs this stage.
+            agent any
+            
             steps {
                 sh "mkdir -p .kube"
                 
@@ -104,8 +103,8 @@ pipeline {
                     // 1. Write the content to a temp config file
                     writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // 2. FINAL CORRECTION: Using single quotes '...' for the sh command 
-                    // prevents Groovy from attempting to interpolate the '$' in the sed command.
+                    // 2. CORRECTED CLEANUP: Using single quotes '...' for the sh command 
+                    // to prevent Groovy from throwing a syntax error on the '$'.
                     sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config.temp'
 
                     // 3. Rename the cleaned file and set restrictive permissions
