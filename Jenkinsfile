@@ -24,9 +24,8 @@ pipeline {
         
         stage('Initialize and Deploy') {
             steps {
-                // The crucial step: 'withCredentials' handles the secure secret injection.
                 withCredentials([
-                    // ID must match the Secret File ID you set in Jenkins
+                    // IMPORTANT: Ensure 'kubeconfig' is the correct ID for your Secret File credential
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
                 ]) {
                     sh '''
@@ -36,10 +35,10 @@ pipeline {
                     # 2. Define the path for the new, CLEAN kubeconfig file
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
                     
-                    echo "--- Decoding and cleaning up Kubeconfig (Final Attempt) ---"
+                    echo "--- Decoding and cleaning up Kubeconfig ---"
                     
                     # --- ROBUST DECODING STEPS ---
-                    # We use 'awk' to reliably extract the base64 string and then pipe to base64 -d
+                    # Use awk to reliably extract the base64 string (field 2) and pipe it to base64 -d
                     
                     # 1. Decode CA Certificate 
                     awk '/certificate-authority-data:/ {print $2}' $KUBECONFIG_SOURCE | base64 -d > ca.crt
@@ -52,7 +51,7 @@ pipeline {
                     
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
                     
-                    # 4. Create a NEW KUBECONFIG using file paths and the VM's TRUE AZURE PRIVATE IP.
+                    # 4. Create a NEW KUBECONFIG using file paths and the VM's TRUE AZURE PRIVATE IP (10.2.0.4:8443).
                     cat << EOF > $KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
@@ -76,13 +75,13 @@ users:
     client-key: $PWD/client.key
 EOF
 
-                    # 5. Set KUBECONFIG to point to the new, clean file
+                    # 5. Set KUBECONFIG environment variable to point to the new, clean file
                     export KUBECONFIG=$KUBECONFIG_CLEAN
 
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
                     
-                    # Added flag to skip TLS verification
+                    # Flag to skip TLS verification
                     kubectl cluster-info --insecure-skip-tls-verify 
                     
                     # --- DEPLOYMENT STEP ---
