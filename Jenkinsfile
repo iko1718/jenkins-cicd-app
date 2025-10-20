@@ -35,20 +35,20 @@ pipeline {
                     # 2. Define the path for the new, CLEAN kubeconfig file
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
                     
-                    echo "--- Decoding and cleaning up Kubeconfig (SED FIX) ---"
+                    echo "--- Decoding and cleaning up Kubeconfig (Optimized SED) ---"
                     
-                    # --- ROBUST DECODING STEPS (Using sed to extract the base64 string) ---
-                    # The sed command reliably strips everything up to and including the colon and space,
-                    # leaving only the base64 string for decoding.
+                    # --- OPTIMIZED DECODING STEPS ---
+                    # Uses a single, quoted sed command to search for the line, strip everything up to 
+                    # the base64 string, and then decode the result. This is the most robust method.
                     
                     # 1. Decode CA Certificate 
-                    grep 'certificate-authority-data:' $KUBECONFIG_SOURCE | sed 's/certificate-authority-data: //g' | base64 -d > ca.crt
+                    sed -n '/certificate-authority-data:/s/.*: //p' $KUBECONFIG_SOURCE | base64 -d > ca.crt
                     
                     # 2. Decode Client Certificate
-                    grep 'client-certificate-data:' $KUBECONFIG_SOURCE | sed 's/client-certificate-data: //g' | base64 -d > client.crt
+                    sed -n '/client-certificate-data:/s/.*: //p' $KUBECONFIG_SOURCE | base64 -d > client.crt
                     
                     # 3. Decode Client Key
-                    grep 'client-key-data:' $KUBECONFIG_SOURCE | sed 's/client-key-data: //g' | base64 -d > client.key
+                    sed -n '/client-key-data:/s/.*: //p' $KUBECONFIG_SOURCE | base64 -d > client.key
                     
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
                     
