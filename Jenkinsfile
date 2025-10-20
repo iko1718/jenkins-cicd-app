@@ -116,14 +116,18 @@ pipeline {
                     // 1. Write the secret content directly to .kube/config
                     writeFile(file: ".kube/config", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // 2. CRITICAL FIX: Use literal string (''') for shell commands containing '$'
-                    // This bypasses the Groovy compilation error entirely.
+                    // 2. CRITICAL FIX: Use literal string (''') to run shell commands safely.
+                    // This block now includes a 'tr' command to strip hidden carriage returns ('\r').
                     sh '''
-                        # Remove quotes
+                        # Remove Windows carriage returns (\r) which can corrupt YAML/JSON parsing
+                        tr -d '\r' < .kube/config > .kube/config.temp
+                        mv .kube/config.temp .kube/config
+
+                        # Remove quotes globally
                         sed -i 's/"//g' .kube/config
                         # Remove empty lines
                         sed -i '/^\\s*$/d' .kube/config
-                        # Remove leading/trailing whitespace (this contains the problematic '$')
+                        # Remove leading/trailing whitespace
                         sed -i -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config
                     '''
                     
