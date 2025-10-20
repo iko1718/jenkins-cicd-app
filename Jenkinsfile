@@ -12,7 +12,6 @@ pipeline {
                 KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
                 
                 # 2. Download the kubectl binary to the CURRENT WORKING DIRECTORY (./kubectl)
-                # FIX: Added the critical dot in 'storage.googleapis.com'
                 curl -LO "https://storage.googleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
                 
                 # 3. Make the binary executable
@@ -40,12 +39,9 @@ pipeline {
                     echo "--- Decoding and cleaning up Kubeconfig ---"
                     
                     # --- ROBUST DECODING START ---
-                    # Strategy: Use grep/awk to get the line, then SED to strip all whitespace (spaces/tabs/newlines)
-                    
                     # Function to reliably extract and decode Base64 data
-                    # Argument 1: The key to grep for (e.g., 'certificate-authority-data:')
-                    # Argument 2: The output filename (e.g., 'ca.crt')
                     extract_and_decode() {
+                        # Isolates the Base64 string, removes ALL whitespace (including spaces and newlines) for clean decoding, and saves to file.
                         grep "$1" $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > "$2"
                     }
 
@@ -61,13 +57,14 @@ pipeline {
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
                     # --- ROBUST DECODING END ---
                     
-                    # 3. Create a NEW KUBECONFIG using file paths instead of Base64 data.
+                    # 3. Create a NEW KUBECONFIG using file paths and the NEW EXTERNAL IP.
+                    # !!! IMPORTANT: REPLACE 'YOUR_EXTERNAL_K8S_IP' WITH THE ROUTABLE IP ADDRESS !!!
                     cat << EOF > $KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
 - cluster:
     certificate-authority: $PWD/ca.crt
-    server: https://192.168.49.2:8443
+    server: https://YOUR_EXTERNAL_K8S_IP:8443
   name: minikube
 contexts:
 - context:
@@ -91,7 +88,7 @@ EOF
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
                     
-                    # This will test the connection using the cleaned kubeconfig.
+                    # This test will only succeed if 'YOUR_EXTERNAL_K8S_IP' is correct and routable.
                     kubectl cluster-info
                     
                     # --- DEPLOYMENT STEP ---
