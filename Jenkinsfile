@@ -8,7 +8,7 @@ pipeline {
                 sh '''
                 echo "--- Installing kubectl locally in the workspace ---"
 
-                # 1. Get the latest stable Kubernetes version number (FIXED TYPO HERE)
+                # 1. Get the latest stable Kubernetes version number 
                 KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
 
                 # 2. Download the kubectl binary to the CURRENT WORKING DIRECTORY (./kubectl)
@@ -24,39 +24,41 @@ pipeline {
 
         stage('Initialize and Deploy') {
             steps {
+                // Switching to triple-double quotes (""") and using backslashes to escape $ signs 
+                // for robustness in complex Groovy environments.
                 withCredentials([
-                    // ID must match the Secret File ID you set in Jenkins
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
                 ]) {
-                    sh '''
+                    sh """
                     # 1. Add the current directory (where ./kubectl is) to the execution PATH.
-                    export PATH=$PATH:$PWD
+                    export PATH=\$PATH:\$PWD
 
                     # 2. Define the path for the new, CLEAN kubeconfig file
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
 
-                    echo "--- Decoding and cleaning up Kubeconfig (Final Escaped Quoting Fix) ---"
+                    echo "--- Decoding and cleaning up Kubeconfig (Final Cut | TR Fix) ---"
 
-                    # --- OPTIMIZED DECODING STEPS ---
-                    # Uses backslash-escaped single quotes (\\') to guarantee the script is passed correctly to sed.
-
+                    # --- MOST ROBUST DECODING STEPS ---
+                    # Uses grep to find the line, cut by the colon delimiter, and 'tr' to remove all whitespace 
+                    # before passing the pure Base64 string to 'base64 -d'. This avoids all quote conflicts.
+                    
                     # 1. Decode CA Certificate 
-                    sed -n \' /certificate-authority-data:/s/.*: //p \' $KUBECONFIG_SOURCE | base64 -d > ca.crt
+                    grep 'certificate-authority-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d > ca.crt
 
                     # 2. Decode Client Certificate
-                    sed -n \' /client-certificate-data:/s/.*: //p \' $KUBECONFIG_SOURCE | base64 -d > client.crt
+                    grep 'client-certificate-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d > client.crt
 
                     # 3. Decode Client Key
-                    sed -n \' /client-key-data:/s/.*: //p \' $KUBECONFIG_SOURCE | base64 -d > client.key
+                    grep 'client-key-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d > client.key
 
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
 
                     # 4. Create a NEW KUBECONFIG using file paths and the VM's TRUE AZURE PRIVATE IP (10.2.0.4:8443).
-                    cat << EOF > $KUBECONFIG_CLEAN
+                    cat << EOF > \$KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
 - cluster:
-    certificate-authority: $PWD/ca.crt
+    certificate-authority: \$PWD/ca.crt
     server: https://10.2.0.4:8443
   name: minikube
 contexts:
@@ -71,12 +73,12 @@ preferences: {}
 users:
 - name: minikube
   user:
-    client-certificate: $PWD/client.crt
-    client-key: $PWD/client.key
+    client-certificate: \$PWD/client.crt
+    client-key: \$PWD/client.key
 EOF
 
                     # 5. Set KUBECONFIG environment variable to point to the new, clean file
-                    export KUBECONFIG=$KUBECONFIG_CLEAN
+                    export KUBECONFIG=\$KUBECONFIG_CLEAN
 
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
@@ -92,7 +94,7 @@ EOF
                     kubectl apply -f service.yaml --insecure-skip-tls-verify
 
                     echo "Deployment logic completed."
-                    '''
+                    """
                 }
             }
         }
