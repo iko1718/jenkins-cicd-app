@@ -109,8 +109,8 @@ pipeline {
                     // Write the secret content to a temp file
                     writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // Corrected cleanup with single quotes (Groovy fix)
-                    sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config.temp'
+                    // NEW FIX: Robust cleanup to remove wrapping quotes, empty lines, and whitespace
+                    sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" -e "1s/^\"//" -e "$s/\"$//" .kube/config.temp'
 
                     // Finalize config file
                     sh "mv .kube/config.temp .kube/config"
