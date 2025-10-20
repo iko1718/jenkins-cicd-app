@@ -69,11 +69,11 @@ pipeline {
                             echo "Performing aggressive cleanup on Kubeconfig file..."
                             
                             # 1. Use 'tr' to strip ALL non-printable control characters and carriage returns (CR)
-                            tr -cd '[:print:]\n' < .kube/config.temp > .kube/config
+                            tr -cd '[:print:]\\n' < .kube/config.temp > .kube/config
                             
                             # 2. Use 'sed' on the final file to remove ALL blank lines and all leading/trailing whitespace
-                            # This ensures the YAML starts exactly with 'apiVersion'.
-                            sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config
+                            # The dollar sign is now ESCAPED (\$) to prevent Groovy compilation errors.
+                            sed -i -e '/^\\$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\\$//' .kube/config
                             
                             # Clean up temporary file
                             rm .kube/config.temp
