@@ -1,126 +1,77 @@
-// This pipeline builds a Docker image, pushes it to Docker Hub, 
-// and deploys the updated image to a Kubernetes cluster using kubectl.
+// Jenkinsfile to deploy an application to a Kubernetes cluster using a Secret File credential.
 
 pipeline {
-    // The main pipeline runs on the Jenkins built-in agent
-    agent any
-
-    // Define environment variables and credential IDs
-    environment {
-        // Your Docker Hub repo name
-        DOCKER_IMAGE_NAME = 'sonaliponnappaa/cicd-app' 
-        
-        // Credential IDs configured in Jenkins
-        DOCKER_USER_CREDS = 'dockerhub-creds' // ID for Docker Hub username/password
-        // CRITICAL: This must be the ID of the "Secret file" credential named 'kubeconfig'
-        KUBE_CONFIG_CREDS = 'kubeconfig' 
+    // We use a Docker agent that already has kubectl installed.
+    agent {
+        docker {
+            image 'bitnami/kubectl:1.29'
+            args '-u root' // Necessary in some environments to run commands easily
+        }
     }
 
     stages {
-        // Stage 1: Checkout the source code
-        stage('Checkout SCM') {
+        stage('Checkout Code') {
             steps {
-                // Gets the source code from the configured Git repository
-                checkout scm
+                // Assuming your source code (including nginx-deployment.yaml) is checked out here.
+                echo 'Source code checked out.'
             }
         }
 
-        // Stage 2: Build the Docker Image
-        stage('Build Image') {
+        stage('Deploy to Kubernetes') {
             steps {
-                script {
-                    // Use withCredentials to securely inject Docker username and password (DOCKER_PASS)
-                    withCredentials([usernamePassword(credentialsId: env.DOCKER_USER_CREDS, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                        
-                        // Robust login for base image pull during build
-                        retry(3) {
-                            echo "Attempting robust docker login for base image pull..."
-                            sh "echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin"
-                        }
-
-                        // Build the image using the current build number as the tag
-                        echo "Building Docker image: ${DOCKER_IMAGE_NAME}:${BUILD_ID}..."
-                        sh "docker build -t ${DOCKER_IMAGE_NAME}:${BUILD_ID} ."
-                    }
-                }
-            }
-        }
-
-        // Stage 3: Push the Docker Image (Includes network resilience and retry logic)
-        stage('Push Image') {
-            steps {
-                script {
-                    echo "Starting authenticated push for ${DOCKER_IMAGE_NAME}:${BUILD_ID}"
+                // 1. Use the Secret File credential named 'kubeconfig'
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE_PATH')]) {
                     
-                    withCredentials([usernamePassword(credentialsId: env.DOCKER_USER_CREDS, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                        
-                        // Network stabilization pause (15 seconds proved effective)
-                        echo "Network stabilization: Waiting 15 seconds before first push attempt..."
-                        sleep 15
-                        
-                        // Robust login right before push
-                        retry(3) {
-                            echo "Attempting robust docker login before push..."
-                            sh "echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin"
-                        }
-                        
-                        // Retry loop for the push operation
-                        for (int i = 1; i <= 5; i++) {
-                            try {
-                                echo "Attempt ${i}/5: Pushing ${DOCKER_IMAGE_NAME}:${BUILD_ID}"
-                                sh "docker push ${DOCKER_IMAGE_NAME}:${BUILD_ID}"
-                                echo "Push successful on attempt ${i}"
-                                
-                                // Tag and push 'latest'
-                                sh "docker tag ${DOCKER_IMAGE_NAME}:${BUILD_ID} ${DOCKER_IMAGE_NAME}:latest"
-                                echo "Attempt ${i}/5: Pushing ${DOCKER_IMAGE_NAME}:latest"
-                                sh "docker push ${DOCKER_IMAGE_NAME}:latest"
-                                echo "Latest push successful on attempt ${i}"
-                                
-                                break // Exit loop on success
-                            } catch (Exception e) {
-                                if (i == 5) {
-                                    error("Push failed after ${i} attempts: ${e.getMessage()}")
-                                }
-                                echo "Push failed on attempt ${i}. Retrying in ${i * 5} seconds..."
-                                sleep i * 5
-                            }
-                        }
-                    }
+                    // 2. Set the KUBECONFIG environment variable. This is the key step.
+                    // kubectl automatically looks for this environment variable to find the configuration file.
+                    sh 'export KUBECONFIG=${KUBECONFIG_FILE_PATH}'
+                    
+                    echo "KUBECONFIG set to: ${KUBECONFIG_FILE_PATH}"
+
+                    // 3. Run kubectl commands using the embedded configuration
+                    sh """
+                    echo "--- Applying Kubernetes deployment (nginx-deployment.yaml) ---"
+                    
+                    # Check cluster connection (optional but good for debugging)
+                    kubectl cluster-info
+
+                    # Apply the deployment YAML
+                    kubectl apply -f nginx-deployment.yaml
+                    
+                    echo "Deployment applied successfully."
+                    
+                    # Wait for the deployment to become ready
+                    kubectl wait --for=condition=Available deployment/nginx-web --timeout=120s
+
+                    # Apply a simple NodePort service to expose the app (Minikube access)
+                    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-web-service
+spec:
+  type: NodePort
+  selector:
+    app: nginx-web
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+EOF
+
+                    echo "Service exposed via NodePort."
+                    """
                 }
             }
         }
-
-        // Stage 4: Deploy to Kubernetes
-        stage('Deploy to K8s') {
-            // CRITICAL FIX: Add --entrypoint='' to disable the Bitnami image's default entrypoint.
-            agent {
-                docker {
-                    image 'bitnami/kubectl:latest'
-                    args '--entrypoint="" -v /var/run/docker.sock:/var/run/docker.sock'
-                }
-            }
-            
-            steps {
-                script {
-                    // Uses file() credential binding for a clean, reliable Kubeconfig file.
-                    withCredentials([file(credentialsId: env.KUBE_CONFIG_CREDS, variable: 'KUBECONFIG')]) {
-                        
-                        sh '''
-                            echo "Deploying image ${DOCKER_IMAGE_NAME}:${BUILD_ID} to Kubernetes..."
-                            
-                            # 1. Update the image URL in the manifest
-                            sed -i "s|PLACEHOLDER_IMAGE_URL|${DOCKER_IMAGE_NAME}:${BUILD_ID}|g" kubernetes-deployment.yaml
-
-                            # 2. Apply the deployment. kubectl automatically uses the KUBECONFIG env var.
-                            # KUBECONFIG variable is set by withCredentials to the correct file path.
-                            kubectl apply -f kubernetes-deployment.yaml
-                            
-                            echo "Deployment command executed successfully."
-                        '''
-                    }
-                }
-            }
+    }
+    
+    post {
+        always {
+            // Clean up the deployment regardless of stage success/failure (optional)
+            // sh 'kubectl delete deployment nginx-web || true'
+            // sh 'kubectl delete service nginx-web-service || true'
+            echo "Pipeline finished."
         }
     }
 }
