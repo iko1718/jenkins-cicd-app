@@ -4,6 +4,13 @@
 pipeline {
     agent any
 
+    // Define the tools (Docker images) required for certain steps
+    tools {
+        // Defines an alias 'kubectl' that uses the specified Docker image
+        // This tool will be invoked via the container() step in the deploy stage.
+        dockerTool 'kubectl', 'bitnami/kubectl:latest'
+    }
+
     // Define environment variables and credential IDs
     environment {
         // Your Docker Hub repo name
@@ -91,37 +98,34 @@ pipeline {
 
         // Stage 4: Deploy to Kubernetes
         stage('Deploy to K8s') {
-            // FIX: Using 'agent any' to ensure the built-in Jenkins executor runs this stage.
             agent any
             
             steps {
+                // Setup Kubeconfig file
                 sh "mkdir -p .kube"
-                
-                // Use withCredentials to inject KUBECFG_CONTENT securely
                 withCredentials([string(credentialsId: env.KUBE_CONFIG_CREDS, variable: 'KUBECFG_CONTENT')]) {
                     
-                    // 1. Write the content to a temp config file
                     writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // 2. CORRECTED CLEANUP: Using single quotes '...' for the sh command 
-                    // to prevent Groovy from throwing a syntax error on the '$'.
+                    // Corrected cleanup with single quotes
                     sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config.temp'
 
-                    // 3. Rename the cleaned file and set restrictive permissions
                     sh "mv .kube/config.temp .kube/config"
                     sh "chmod 600 .kube/config"
 
-                    // 4. Set the KUBECONFIG environment variable for kubectl
-                    withEnv(["KUBECONFIG=.kube/config", "IMAGE_URL=${DOCKER_IMAGE_NAME}:${BUILD_ID}"]) {
-                        sh "echo Deploying image ${IMAGE_URL} to Kubernetes..."
-                        
-                        // 5. Update the K8s manifest with the new image tag
-                        sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${IMAGE_URL}|g' kubernetes-deployment.yaml"
+                    // Use the 'kubectl' tool (bitnami/kubectl:latest) to run the deployment commands
+                    container('kubectl') {
+                        withEnv(["KUBECONFIG=.kube/config", "IMAGE_URL=${DOCKER_IMAGE_NAME}:${BUILD_ID}"]) {
+                            sh "echo Deploying image ${IMAGE_URL} to Kubernetes..."
+                            
+                            // Update the K8s manifest with the new image tag
+                            sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${IMAGE_URL}|g' kubernetes-deployment.yaml"
 
-                        // 6. Apply the deployment
-                        sh "kubectl apply -f kubernetes-deployment.yaml"
-                        
-                        echo "Deployment command executed successfully."
+                            // Apply the deployment
+                            sh "kubectl apply -f kubernetes-deployment.yaml"
+                            
+                            echo "Deployment command executed successfully."
+                        }
                     }
                 }
             }
