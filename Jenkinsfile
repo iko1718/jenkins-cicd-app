@@ -19,7 +19,8 @@ pipeline {
                 // We use the docker tool agent for this step
                 script {
                     def imageTag = env.BUILD_NUMBER
-                    docker.withRegistry('', 'docker-hub-credentials') {
+                    // --- CHANGED: Using 'dockerhub-creds'
+                    docker.withRegistry('', 'dockerhub-creds') {
                         echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag}"
                         def customImage = docker.build("${DOCKER_IMAGE}:${imageTag}", '.')
                     }
@@ -32,7 +33,8 @@ pipeline {
                 // We use the docker tool agent for this step
                 script {
                     def imageTag = env.BUILD_NUMBER
-                    docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-credentials') {
+                    // --- CHANGED: Using 'dockerhub-creds'
+                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-creds') {
                         echo "Logging into Docker Hub and pushing image: ${DOCKER_IMAGE}:${imageTag}"
                         def customImage = docker.image("${DOCKER_IMAGE}:${imageTag}")
                         customImage.push()
@@ -61,9 +63,7 @@ pipeline {
                         // Write the Kubeconfig secret content to a file
                         writeFile file: '.kube/config', text: "$KUBECFG_CONTENT"
 
-                        // --- CRITICAL FIX: Sanitize the file content ---
-                        // This command removes non-printable control characters and trims excess
-                        // whitespace from the beginning/end of each line, ensuring pure YAML.
+                        // CRITICAL FIX: Sanitize the file content
                         sh "sed -i 's/[[:cntrl:]]//g; s/^[ \\t]*//; s/[ \\t]*\$//' .kube/config"
 
                         sh 'chmod 600 .kube/config'
