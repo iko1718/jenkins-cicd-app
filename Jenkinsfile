@@ -52,23 +52,26 @@ node {
 
                 echo "Deploying image ${imageTag} to Kubernetes..."
 
-                // 1. Convert the raw secret text (KUBECFG_CONTENT) into a base64 encoded string
-                def kubeconfigBase64 = KUBECFG_CONTENT.trim().encodeBase64().toString()
+                // *** FIX: Replaced encodeBase64() with the whitelisted Java utility. ***
+                // The Java Base64 utility is almost always approved in the Groovy Sandbox.
+                def kubeconfigBase64 = java.util.Base64.getEncoder().encodeToString(KUBECFG_CONTENT.trim().getBytes('UTF-8'))
 
-                // 2. Write the SINGLE-LINE base64 string to a temporary file. This is immune to YAML corruption.
+                // Write the safe, single-line Base64 string to a temporary file.
                 writeFile file: kubeconfigFileEncoded, text: kubeconfigBase64
 
                 // Replace image placeholder with the new image tag
                 sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
 
-                // 3. Decode the file and pipe the content directly into kubectl's stdin using the '--kubeconfig=-' flag.
-                // This is the most reliable way to handle Kubeconfig secrets.
-                sh "base64 -d ${kubeconfigFileEncoded} | kubectl --kubeconfig=- apply -f ${deploymentFile}"
+                // Decode the file and pipe the content directly to kubectl.
+                sh """
+                base64 -d ${kubeconfigFileEncoded} | kubectl --kubeconfig=- apply -f ${deploymentFile}
+                
                 echo "Deployment triggered successfully for image: ${imageTag}"
-
-                // Cleanup
-                sh "git checkout ${deploymentFile}"
-                sh "rm ${kubeconfigFileEncoded}"
+                
+                # Cleanup
+                git checkout ${deploymentFile}
+                rm ${kubeconfigFileEncoded}
+                """
             }
         }
     }
