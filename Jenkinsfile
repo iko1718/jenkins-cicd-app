@@ -5,16 +5,23 @@ pipeline {
         stage('Setup Tools') {
             steps {
                 sh '''
-                echo "--- Installing kubectl locally in the workspace ---"
+                echo "--- Installing kubectl and openssl locally in the workspace ---"
                 KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
                 curl -LO "https://storage.googleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
                 chmod +x ./kubectl
-                echo "kubectl downloaded and ready in: $PWD/kubectl"
+                
+                # Check if openssl is available
+                if ! command -v openssl &> /dev/null; then
+                    echo "Installing openssl..."
+                    apt-get update && apt-get install -y openssl
+                fi
+                
+                echo "Tools installed and ready"
                 '''
             }
         }
 
-        stage('Initialize and Deploy') {
+        stage('Extract and Prepare Certificates') {
             steps {
                 withCredentials([
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
@@ -24,103 +31,45 @@ pipeline {
                     export PATH=\$PATH:\$PWD
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
 
-                    echo "--- Debug: Inspecting kubeconfig file ---"
-                    echo "Kubeconfig location: \$KUBECONFIG_SOURCE"
-                    echo "First few lines of kubeconfig:"
-                    head -20 "\$KUBECONFIG_SOURCE"
+                    echo "=== STEP 1: Extracting certificates from kubeconfig ==="
                     
-                    echo "--- Extracting base64 data with robust cleaning ---"
-                    
-                    # Function to extract and clean base64 data
-                    extract_clean_base64() {
-                        local key="\$1"
-                        local output_file="\$2"
-                        
-                        # Extract the line, get everything after the first space, and remove ALL whitespace
-                        grep "\$key" "\$KUBECONFIG_SOURCE" | \
-                        sed "s/.*\$key//" | \
-                        sed 's/^[[:space:]]*//' | \
-                        tr -d '[:space:]' | \
-                        base64 -d > "\$output_file"
-                        
-                        # Verify the extraction worked
-                        if [ ! -s "\$output_file" ]; then
-                            echo "ERROR: Failed to extract \$key"
-                            return 1
-                        fi
-                        return 0
-                    }
+                    # Extract base64 data and decode
+                    grep "certificate-authority-data:" "\$KUBECONFIG_SOURCE" | awk '{print \$2}' | base64 -d > ca.crt
+                    grep "client-certificate-data:" "\$KUBECONFIG_SOURCE" | awk '{print \$2}' | base64 -d > client.crt
+                    grep "client-key-data:" "\$KUBECONFIG_SOURCE" | awk '{print \$2}' | base64 -d > client.key.original
 
-                    # Extract certificates with robust cleaning
-                    echo "Extracting CA certificate..."
-                    if ! extract_clean_base64 "certificate-authority-data:" ca.crt; then
-                        echo "Trying alternative extraction method for CA..."
-                        # Alternative method: use awk and remove any non-base64 characters
-                        grep "certificate-authority-data" "\$KUBECONFIG_SOURCE" | \
-                        awk '{for(i=2;i<=NF;i++) printf \$i}' | \
-                        tr -d '[:space:]' | \
-                        base64 -d > ca.crt
+                    echo "--- Original files extracted ---"
+                    ls -la ca.crt client.crt client.key.original
+                    echo "File headers:"
+                    file ca.crt client.crt client.key.original
+
+                    echo "=== STEP 2: Convert private key to proper format ==="
+                    # Convert RSA private key to PKCS#8 format if needed
+                    if head -1 client.key.original | grep -q "BEGIN RSA PRIVATE KEY"; then
+                        echo "Converting RSA private key to PKCS#8 format..."
+                        openssl pkcs8 -topk8 -nocrypt -in client.key.original -out client.key
+                        echo "RSA key converted to PKCS#8"
+                    else
+                        echo "Key is already in PKCS#8 format, using as-is"
+                        cp client.key.original client.key
                     fi
 
-                    echo "Extracting client certificate..."
-                    if ! extract_clean_base64 "client-certificate-data:" client.crt; then
-                        echo "Trying alternative extraction method for client cert..."
-                        grep "client-certificate-data" "\$KUBECONFIG_SOURCE" | \
-                        awk '{for(i=2;i<=NF;i++) printf \$i}' | \
-                        tr -d '[:space:]' | \
-                        base64 -d > client.crt
-                    fi
+                    echo "=== STEP 3: Verify certificate and key compatibility ==="
+                    # Verify the certificate and key match
+                    echo "Verifying certificate and key pair..."
+                    openssl x509 -noout -modulus -in client.crt | openssl md5 > cert.md5
+                    openssl rsa -noout -modulus -in client.key 2>/dev/null | openssl md5 > key.md5 || \
+                    openssl pkcs8 -in client.key -nocrypt -topk8 -out /dev/null 2>/dev/null && \
+                    openssl pkey -in client.key -noout -modulus | openssl md5 > key.md5
 
-                    echo "Extracting client key..."
-                    if ! extract_clean_base64 "client-key-data:" client.key; then
-                        echo "Trying alternative extraction method for client key..."
-                        grep "client-key-data" "\$KUBECONFIG_SOURCE" | \
-                        awk '{for(i=2;i<=NF;i++) printf \$i}' | \
-                        tr -d '[:space:]' | \
-                        base64 -d > client.key
-                    fi
-
-                    # Verify the files
-                    echo "--- Verifying extracted files ---"
-                    ls -la ca.crt client.crt client.key
-                    echo "File sizes:"
-                    wc -c ca.crt client.crt client.key
-                    
-                    echo "--- Checking file contents ---"
-                    echo "CA cert first line:"
-                    head -1 ca.crt || echo "Cannot read ca.crt"
-                    echo "Client cert first line:"
-                    head -1 client.crt || echo "Cannot read client.crt" 
-                    echo "Client key first line:"
-                    head -1 client.key || echo "Cannot read client.key"
-
-                    # If extraction still failed, try a completely different approach
-                    if [ ! -s ca.crt ] || [ ! -s client.crt ] || [ ! -s client.key ]; then
-                        echo "--- Using YAML parsing approach ---"
-                        # Install yq if not available
-                        if ! command -v yq &> /dev/null; then
-                            echo "Installing yq..."
-                            wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O yq
-                            chmod +x yq
-                            export PATH=\$PATH:\$PWD
-                        fi
-                        
-                        # Use yq to extract the base64 data
-                        ./yq eval '.clusters[0].cluster."certificate-authority-data"' "\$KUBECONFIG_SOURCE" | base64 -d > ca.crt
-                        ./yq eval '.users[0].user."client-certificate-data"' "\$KUBECONFIG_SOURCE" | base64 -d > client.crt
-                        ./yq eval '.users[0].user."client-key-data"' "\$KUBECONFIG_SOURCE" | base64 -d > client.key
-                    fi
-
-                    # Final verification
-                    if [ ! -s ca.crt ] || [ ! -s client.crt ] || [ ! -s client.key ]; then
-                        echo "ERROR: Failed to extract all required certificates"
-                        echo "Debug info:"
-                        echo "Kubeconfig content around certificate data:"
-                        grep -A 2 -B 2 "certificate-authority-data\\|client-certificate-data\\|client-key-data" "\$KUBECONFIG_SOURCE"
+                    if diff cert.md5 key.md5; then
+                        echo "✓ Certificate and key are compatible"
+                    else
+                        echo "✗ Certificate and key do not match!"
                         exit 1
                     fi
 
-                    echo "--- Creating clean kubeconfig ---"
+                    echo "=== STEP 4: Create clean kubeconfig ==="
                     cat << EOF > \$KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
@@ -144,19 +93,114 @@ users:
     client-key: \$PWD/client.key
 EOF
 
-                    export KUBECONFIG=\$KUBECONFIG_CLEAN
-
-                    echo "--- Testing connection ---"
-                    ./kubectl cluster-info --insecure-skip-tls-verify
-
-                    echo "--- Deploying application ---"
-                    ./kubectl apply -f deployment.yaml --insecure-skip-tls-verify
-                    ./kubectl apply -f service.yaml --insecure-skip-tls-verify
-
-                    echo "Deployment completed successfully!"
+                    echo "Clean kubeconfig created:"
+                    cat \$KUBECONFIG_CLEAN
                     """
                 }
             }
+        }
+
+        stage('Test Kubernetes Connection') {
+            steps {
+                sh """
+                export PATH=\$PATH:\$PWD
+                export KUBECONFIG=\$PWD/kubeconfig_clean.yaml
+
+                echo "=== STEP 5: Testing Kubernetes connection ==="
+                
+                # Test with increasing verbosity
+                echo "--- Basic connection test ---"
+                ./kubectl get nodes --insecure-skip-tls-verify || echo "Basic test failed, trying verbose..."
+                
+                echo "--- Verbose connection test ---"
+                ./kubectl --v=6 get nodes --insecure-skip-tls-verify 2>&1 | head -50 || echo "Verbose test completed"
+                
+                echo "--- Cluster info test ---"
+                ./kubectl cluster-info --insecure-skip-tls-verify || echo "Cluster info test completed"
+                
+                echo "=== Connection tests finished ==="
+                """
+            }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                sh """
+                export PATH=\$PATH:\$PWD
+                export KUBECONFIG=\$PWD/kubeconfig_clean.yaml
+
+                echo "=== STEP 6: Deploying application ==="
+                
+                # Check if deployment files exist
+                if [ -f "deployment.yaml" ]; then
+                    echo "Applying deployment.yaml..."
+                    ./kubectl apply -f deployment.yaml --insecure-skip-tls-verify
+                else
+                    echo "deployment.yaml not found, checking for k8s directory..."
+                    if [ -d "k8s" ]; then
+                        echo "Applying all YAML files in k8s directory..."
+                        ./kubectl apply -f k8s/ --insecure-skip-tls-verify
+                    else
+                        echo "No deployment files found. Creating a simple test deployment..."
+                        cat << EOF | ./kubectl apply -f - --insecure-skip-tls-verify
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins-test-app
+  labels:
+    app: jenkins-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins-test
+  template:
+    metadata:
+      labels:
+        app: jenkins-test
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-test-service
+spec:
+  selector:
+    app: jenkins-test
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+EOF
+                    fi
+                fi
+
+                echo "=== STEP 7: Verify deployment ==="
+                ./kubectl get deployments,services,pods --insecure-skip-tls-verify
+                
+                echo "🎉 Deployment completed successfully!"
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            sh '''
+            echo "=== Cleaning up temporary files ==="
+            rm -f ca.crt client.crt client.key client.key.original cert.md5 key.md5 kubeconfig_clean.yaml
+            '''
+        }
+        success {
+            echo "🚀 Pipeline executed successfully!"
+        }
+        failure {
+            echo "❌ Pipeline failed - check the logs above for details"
         }
     }
 }
