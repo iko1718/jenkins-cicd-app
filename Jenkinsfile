@@ -104,9 +104,8 @@ pipeline {
                     // 1. Write the content to a temp config file
                     writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // 2. SIMPLIFIED CLEANUP: Remove empty lines and surrounding whitespace. 
-                    // This avoids the 'tr -cd' command which damaged the YAML structure.
-                    sh "sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config.temp"
+                    // 2. CORRECTED CLEANUP: Escaped the '$' in the sed command (s/[[:space:]]*\$//')
+                    sh "sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\$//' .kube/config.temp"
 
                     // 3. Rename the cleaned file and set restrictive permissions
                     sh "mv .kube/config.temp .kube/config"
