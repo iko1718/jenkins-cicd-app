@@ -45,7 +45,7 @@ pipeline {
                             apt-get update -y
                             apt-get install -y curl gnupg apt-transport-https
 
-                            # 2. Add Kubernetes official signing key (using the v1.29 config from your log)
+                            # 2. Add Kubernetes official signing key
                             install -m 0755 -d /etc/apt/keyrings
                             curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
                             
@@ -62,13 +62,18 @@ pipeline {
                     }
                 }
 
-                // Sub-Stage C: FIXED DEPLOYMENT COMMAND
+                // Sub-Stage C: FIXED DEPLOYMENT COMMAND AND ADDED AUTHENTICATION
                 stage('Deploy to Kubernetes') {
                     steps {
                         echo '--- Starting Deployment to Kubernetes Cluster ---'
-                        // Use the exact filename in the root of the workspace
-                        sh 'kubectl apply -f kubernetes-deployment.yaml'
-                        echo 'Deployment successfully initiated! Status depends on cluster connection.'
+                        // Use Jenkins credentials to securely inject the Kubeconfig file content.
+                        withCredentials([file(credentialsId: 'k8s_prod_config', variable: 'KUBECONFIG_PATH')]) {
+                            echo "Kubeconfig injected from credentials. Deploying..."
+                            // Set the KUBECONFIG environment variable to point to the temporary file
+                            // created by Jenkins, allowing kubectl to connect to the cluster.
+                            sh "export KUBECONFIG=\$KUBECONFIG_PATH && kubectl apply -f kubernetes-deployment.yaml"
+                        }
+                        echo 'Deployment command executed. The next step will confirm if the cluster accepted the changes.'
                     }
                 }
             }
