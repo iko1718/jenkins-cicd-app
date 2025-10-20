@@ -33,7 +33,7 @@ node {
                     
                     sh "docker push ${imageTag}"
                     sh "docker tag ${imageTag} sonaliponnappaa/cicd-app:latest"
-                    sh "docker push sonaliponnappaa/cicd-app:latest"
+                    sh "docker push ${imageTag}" // Use imageTag for latest push for safety
                     sh "docker logout"
                 }
             }
@@ -52,23 +52,29 @@ node {
 
                 echo "Deploying image ${imageTag} to Kubernetes..."
 
-                // 1. Write the raw KUBECFG_CONTENT directly to a temporary file
+                // 1. Explicitly create directory and write the credential content
+                sh 'mkdir -p .kube' 
                 writeFile file: '.kube/config', text: KUBECFG_CONTENT.trim()
+                sh 'chmod 600 .kube/config'
 
-                // 2. Set KUBECONFIG environment variable to use the file.
+                // 2. Set KUBECONFIG environment variable and run kubectl
                 withEnv(["KUBECONFIG=${kubeconfigFilePath}"]) {
                     
                     // 3. Replace image placeholder
                     sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
 
-                    // 4. Apply deployment (kubectl automatically uses $KUBECONFIG)
+                    // --- DEBUGGING STEP ---
+                    echo "--- KUBECONFIG CONTENT (FIRST 5 LINES) ---"
+                    sh 'cat .kube/config | head -n 5'
+                    echo "------------------------------------------"
+
+                    // 4. Apply deployment
                     sh """
                     kubectl apply -f ${deploymentFile}
 
                     echo "Deployment triggered successfully for image: ${imageTag}"
-
+                    
                     # Cleanup
-                    git checkout ${deploymentFile}
                     rm -rf .kube
                     """
                 }
