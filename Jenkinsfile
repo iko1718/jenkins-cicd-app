@@ -112,8 +112,9 @@ pipeline {
                     // FIX 1: Remove all leading/trailing whitespace and blank lines (using safe sed)
                     sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config.temp'
 
-                    // FIX 2: Use 'tr' to remove all double quotes (") which frequently wrap the secret content
-                    sh 'tr -d "\"" < .kube/config.temp > .kube/config.temp.tmp && mv .kube/config.temp.tmp .kube/config.temp'
+                    // FIX 2: **CORRECTED QUOTING** Use 'tr' to remove all double quotes (") 
+                    // This is the common cause of the JSON parse error in Kubeconfig.
+                    sh "tr -d '\"' < .kube/config.temp > .kube/config.temp.tmp && mv .kube/config.temp.tmp .kube/config.temp"
 
                     // Finalize config file
                     sh "mv .kube/config.temp .kube/config"
