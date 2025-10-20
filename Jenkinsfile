@@ -12,7 +12,8 @@ pipeline {
                 KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
                 
                 # 2. Download the kubectl binary to the CURRENT WORKING DIRECTORY (./kubectl)
-                curl -LO "https://storagegoogleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
+                # FIX: Added the critical dot in 'storage.googleapis.com'
+                curl -LO "https://storage.googleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
                 
                 # 3. Make the binary executable
                 chmod +x ./kubectl
@@ -90,8 +91,7 @@ EOF
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
                     
-                    # The connection timeout is an environment issue (firewall/network).
-                    # If this still fails, you MUST check the network connectivity between Jenkins and your K8s node.
+                    # This will test the connection using the cleaned kubeconfig.
                     kubectl cluster-info
                     
                     # --- DEPLOYMENT STEP ---
