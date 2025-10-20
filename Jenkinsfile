@@ -8,8 +8,8 @@ pipeline {
                 sh '''
                 echo "--- Installing kubectl locally in the workspace ---"
 
-                # 1. Get the latest stable Kubernetes version number
-                KUBE_VERSION=$(curl -s https://storageapis.com/kubernetes-release/release/stable.txt)
+                # 1. Get the latest stable Kubernetes version number (FIXED TYPO HERE)
+                KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
 
                 # 2. Download the kubectl binary to the CURRENT WORKING DIRECTORY (./kubectl)
                 curl -LO "https://storage.googleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
@@ -25,7 +25,7 @@ pipeline {
         stage('Initialize and Deploy') {
             steps {
                 withCredentials([
-                    // IMPORTANT: Ensure 'kubeconfig' is the correct ID for your Secret File credential
+                    // ID must match the Secret File ID you set in Jenkins
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
                 ]) {
                     sh '''
@@ -39,7 +39,7 @@ pipeline {
 
                     # --- OPTIMIZED DECODING STEPS ---
                     # Uses backslash-escaped single quotes (\\') to guarantee the script is passed correctly to sed.
-                    
+
                     # 1. Decode CA Certificate 
                     sed -n \' /certificate-authority-data:/s/.*: //p \' $KUBECONFIG_SOURCE | base64 -d > ca.crt
 
