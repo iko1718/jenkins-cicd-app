@@ -1,6 +1,13 @@
 pipeline {
-    // Defines the agent where the pipeline runs (the host VM where Jenkins is running)
-    agent any
+    // 💡 NEW FIX: Use a Docker image that already contains the 'docker' client.
+    // This runs the entire pipeline inside a separate Docker container using the official client image.
+    agent {
+        docker {
+            image 'docker:latest'
+            // Ensure the Docker daemon socket is mounted for the inner container to work
+            args '-v /var/run/docker.sock:/var/run/docker.sock' 
+        }
+    }
 
     // Environment variables used throughout the pipeline
     environment {
@@ -23,7 +30,8 @@ pipeline {
         // ===================================
         stage('Checkout SCM') {
             steps {
-                checkout scm
+                // Checkout must be outside the 'script' block for declarative
+                checkout scm 
             }
         }
         
@@ -36,9 +44,8 @@ pipeline {
                     def imageTag = "${env.DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}"
                     echo "Building Docker image: ${imageTag}"
                     
-                    // 🚨 CRITICAL FIX: Install Docker client before using 'docker build'
-                    // This prevents the "docker: not found" error
-                    sh 'apt-get update && apt-get install -y docker.io' 
+                    // ❌ NO LONGER NEEDED: The 'docker:latest' image already has the client.
+                    // sh 'apt-get update && apt-get install -y docker.io' 
                     
                     // We use the sh step to execute Docker commands on the host VM
                     sh "docker build -t ${imageTag} ."
@@ -54,7 +61,6 @@ pipeline {
                 script {
                     def imageTag = "${env.DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}"
                     
-                    // Use 'withCredentials' to securely access the stored Docker Hub credentials
                     withCredentials([usernamePassword(
                         credentialsId: env.DOCKER_HUB_CREDS,
                         passwordVariable: 'DOCKER_PASSWORD',
@@ -62,13 +68,11 @@ pipeline {
                     )]) {
                         echo "Logging into Docker Hub and pushing image: ${imageTag}"
 
-                        // Secure login using the credentials injected above
+                        // Secure login
                         sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin"
                         
-                        // Push the newly tagged image
+                        // Push tags
                         sh "docker push ${imageTag}"
-                        
-                        // Push a 'latest' tag for convenience
                         sh "docker tag ${imageTag} ${env.DOCKER_IMAGE_NAME}:latest"
                         sh "docker push ${env.DOCKER_IMAGE_NAME}:latest"
 
@@ -83,36 +87,36 @@ pipeline {
         // Stage 4: Deploy (to Kubernetes)
         // ===================================
         stage('Deploy to K8s') {
+            // ⚠️ TEMPORARY OVERRIDE: Deploy stage needs a different agent (one with kubectl/sed)
+            // For the fastest fix, we will skip this stage temporarily unless you are sure
+            // the 'docker:latest' image has kubectl and sed installed (it may not).
+            // For now, let's focus on Build and Push.
+            agent any // Switch back to the main Jenkins agent for this, if needed.
+
             steps {
                 script {
                     def imageTag = "${env.DOCKER_IMAGE_NAME}:${env.BUILD_NUMBER}"
                     
-                    // ⚠️ PRELIMINARY CHECK: Install kubectl and sed if they are missing
-                    // This prevents errors if the agent doesn't have these essential tools.
+                    // ⚠️ Install Kubectl and sed since the 'agent any' doesn't guarantee them.
                     sh 'apt-get update && apt-get install -y kubectl sed'
 
-                    // Use 'withCredentials' (Secret Text) to get the Kubeconfig content
                     withCredentials([string(
                         credentialsId: env.KUBECONFIG_CREDENTIAL_ID,
-                        variable: 'KUBECFG_CONTENT' // This variable will hold the YAML text
+                        variable: 'KUBECFG_CONTENT'
                     )]) {
                         echo "Deploying image ${imageTag} to Minikube cluster..."
 
                         // 1. Write the Secret Text content to a temporary file
-                        // The 'echo' is wrapped in 'sh' and the variable quoted to preserve multi-line content
                         sh "echo \"\${KUBECFG_CONTENT}\" > ${env.KUBECONFIG_FILE}"
 
-                        // 2. Temporarily replace the placeholder with the actual image tag
+                        // 2. Temporarily replace the placeholder
                         sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${env.K8S_DEPLOYMENT_FILE}"
                         
-                        // 3. Apply the deployment to Minikube using kubectl
-                        // CRITICAL: We use '--kubeconfig=' to point to the temporary file we just created.
+                        // 3. Apply the deployment
                         sh "kubectl --kubeconfig=${env.KUBECONFIG_FILE} apply -f ${env.K8S_DEPLOYMENT_FILE}"
 
-                        // 4. Revert the file change for the next commit/build (clean workspace)
+                        // 4. Revert and cleanup
                         sh "git checkout ${env.K8S_DEPLOYMENT_FILE}"
-                        
-                        // 5. Cleanup: Delete the temporary Kubeconfig file
                         sh "rm ${env.KUBECONFIG_FILE}"
 
                         echo "Deployment complete! Application is now running on Kubernetes."
