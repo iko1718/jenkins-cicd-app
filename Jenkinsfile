@@ -1,7 +1,7 @@
 // Jenkinsfile to deploy an application to a Kubernetes cluster using a Secret File credential.
 
 pipeline {
-    // FIX: Switched to a standard 'ubuntu' image and will install kubectl manually.
+    // Using a standard 'ubuntu' image and installing kubectl manually for robustness.
     agent {
         docker {
             image 'ubuntu:latest'
@@ -15,9 +15,10 @@ pipeline {
                 sh '''
                 echo "Installing dependencies..."
                 
-                # 1. Update and install necessary packages (curl, apt-transport-https)
+                # 1. Update and install necessary packages (curl, gnupg, apt-transport-https)
+                # FIX: Added 'gnupg' to resolve the "E: gnupg... not installed" error.
                 apt-get update -y
-                apt-get install -y curl apt-transport-https
+                apt-get install -y curl apt-transport-https gnupg
 
                 # 2. Install kubectl (using the standard Kubernetes repository setup)
                 curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
@@ -45,7 +46,6 @@ pipeline {
                 withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE_PATH')]) {
                     
                     // 2. Set the KUBECONFIG environment variable. This is the key step.
-                    // kubectl automatically looks for this environment variable to find the configuration file.
                     sh 'export KUBECONFIG=${KUBECONFIG_FILE_PATH}'
                     
                     echo "KUBECONFIG set to: ${KUBECONFIG_FILE_PATH}"
