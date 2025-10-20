@@ -52,9 +52,9 @@ node {
 
                 echo "Deploying image ${imageTag} to Kubernetes..."
 
-                // FIX: Use writeFile to safely store the multiline Kubeconfig secret (KUBECFG_CONTENT)
-                // This prevents shell interpolation errors (the 'yaml: mapping values...' issue).
-                writeFile file: kubeconfigFile, text: KUBECFG_CONTENT
+                // FINAL FIX: Use writeFile with .trim() to ensure the secret content (KUBECFG_CONTENT) 
+                // is written without any leading/trailing whitespace or extra newlines that corrupt the YAML.
+                writeFile file: kubeconfigFile, text: KUBECFG_CONTENT.trim()
 
                 // Replace image placeholder with the new image tag
                 sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
