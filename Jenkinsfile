@@ -38,20 +38,22 @@ pipeline {
                     
                     echo "--- Decoding and cleaning up Kubeconfig ---"
                     
-                    # Extract and decode the CA cert from the Jenkins-provided file
-                    CA_DATA=$(grep 'certificate-authority-data:' $KUBECONFIG_SOURCE | awk '{print $2}')
-                    echo $CA_DATA | base64 -d > ca.crt
+                    # --- ROBUST DECODING START ---
+                    # Use grep/awk to isolate the Base64 string, then TR to clean whitespace, 
+                    # and finally base64 -d to decode into clean PEM files.
+
+                    # Decode CA Certificate
+                    grep 'certificate-authority-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | tr -d '\n\r' | base64 -d > ca.crt
                     
-                    # Extract and decode the Client Certificate
-                    CERT_DATA=$(grep 'client-certificate-data:' $KUBECONFIG_SOURCE | awk '{print $2}')
-                    echo $CERT_DATA | base64 -d > client.crt
+                    # Decode Client Certificate
+                    grep 'client-certificate-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | tr -d '\n\r' | base64 -d > client.crt
                     
-                    # Extract and decode the Client Key
-                    KEY_DATA=$(grep 'client-key-data:' $KUBECONFIG_SOURCE | awk '{print $2}')
-                    echo $KEY_DATA | base64 -d > client.key
+                    # Decode Client Key
+                    grep 'client-key-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | tr -d '\n\r' | base64 -d > client.key
+                    
+                    # --- ROBUST DECODING END ---
                     
                     # 3. Create a NEW KUBECONFIG using file paths instead of Base64 data.
-                    # This ensures the PEM data is clean and correctly formatted for kubectl.
                     cat << EOF > $KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
