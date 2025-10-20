@@ -62,20 +62,20 @@ pipeline {
                         sh "mkdir -p .kube"
 
                         // Write the Kubeconfig secret content to a temporary file
+                        // The secret must be written to disk before cleanup can happen
                         writeFile file: '.kube/config.temp', text: "$KUBECFG_CONTENT"
 
-                        // --- FINAL, ROBUST KUBECONFIG CLEANUP USING TRIPLE SINGLE QUOTES ---
-                        // Triple single quotes (''') prevents Groovy from attempting to interpolate '$'
-                        sh '''
-                            echo "Performing aggressive cleanup on Kubeconfig file..."
-                            
-                            # 1. Strip non-printable control characters (tr), remove blank lines (sed), 
-                            # and remove leading/trailing whitespace (sed). The literal '$' is safe here.
-                            cat .kube/config.temp | tr -cd '[:print:]\n' | sed -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' > .kube/config
-                            
-                            # Clean up temporary file
-                            rm .kube/config.temp
-                        '''
+                        echo "Performing ultimate cleanup on Kubeconfig file..."
+
+                        // 1. Aggressively strip ALL non-printable characters (except basic space, tab, and newline)
+                        // This removes any hidden BOM/control characters. Output goes to the final config file.
+                        sh "tr -cd '\\11\\12\\15\\40-\\176' < .kube/config.temp > .kube/config"
+
+                        // 2. Remove all blank lines and all leading/trailing whitespace in-place
+                        sh "sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config"
+                        
+                        // Clean up temporary file
+                        sh "rm .kube/config.temp"
 
                         sh 'chmod 600 .kube/config'
 
