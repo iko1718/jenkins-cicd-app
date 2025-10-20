@@ -12,7 +12,7 @@ pipeline {
                 KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
                 
                 # 2. Download the kubectl binary to the CURRENT WORKING DIRECTORY (./kubectl)
-                curl -LO "https://storage.googleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
+                curl -LO "https://storagegoogleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
                 
                 # 3. Make the binary executable
                 chmod +x ./kubectl
@@ -39,18 +39,25 @@ pipeline {
                     echo "--- Decoding and cleaning up Kubeconfig ---"
                     
                     # --- ROBUST DECODING START ---
-                    # Use grep/awk to isolate the Base64 string, then TR to clean whitespace, 
-                    # and finally base64 -d to decode into clean PEM files.
+                    # Strategy: Use grep/awk to get the line, then SED to strip all whitespace (spaces/tabs/newlines)
+                    
+                    # Function to reliably extract and decode Base64 data
+                    # Argument 1: The key to grep for (e.g., 'certificate-authority-data:')
+                    # Argument 2: The output filename (e.g., 'ca.crt')
+                    extract_and_decode() {
+                        grep "$1" $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > "$2"
+                    }
 
                     # Decode CA Certificate
-                    grep 'certificate-authority-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | tr -d '\n\r' | base64 -d > ca.crt
+                    extract_and_decode 'certificate-authority-data:' ca.crt
                     
                     # Decode Client Certificate
-                    grep 'client-certificate-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | tr -d '\n\r' | base64 -d > client.crt
+                    extract_and_decode 'client-certificate-data:' client.crt
                     
                     # Decode Client Key
-                    grep 'client-key-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | tr -d '\n\r' | base64 -d > client.key
+                    extract_and_decode 'client-key-data:' client.key
                     
+                    echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
                     # --- ROBUST DECODING END ---
                     
                     # 3. Create a NEW KUBECONFIG using file paths instead of Base64 data.
@@ -80,12 +87,15 @@ EOF
                     # 4. Set KUBECONFIG to point to the new, clean file
                     export KUBECONFIG=$KUBECONFIG_CLEAN
 
-                    # --- SECURITY CHECK ---
-                    echo "--- Testing Kubernetes Connection (Should succeed now) ---"
+                    # --- TESTING KUBERNETES CONNECTION ---
+                    echo "--- Testing Kubernetes Connection ---"
+                    
+                    # The connection timeout is an environment issue (firewall/network).
+                    # If this still fails, you MUST check the network connectivity between Jenkins and your K8s node.
                     kubectl cluster-info
-
-                    # --- DEPLOYMENT STEP (Replace with your actual commands) ---
-                    echo "--- Starting Deployment with Kubeconfig ---"
+                    
+                    # --- DEPLOYMENT STEP ---
+                    echo "--- Starting Deployment Logic ---"
                     # kubectl apply -f my-deployment.yaml
 
                     echo "Deployment logic completed."
