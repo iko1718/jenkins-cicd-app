@@ -108,12 +108,12 @@ pipeline {
                     // Write the secret content to a temp file
                     writeFile(file: ".kube/config.temp", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // *** NEW ROBUST CLEANUP STEP ***
-                    // Use a multiline shell block to ensure sed and tr commands (with file redirection) execute atomically 
-                    // and correctly, preventing shell fragmentation errors.
+                    // *** CORRECTED ROBUST CLEANUP STEP ***
+                    // Escaping the literal dollar sign (\$) to prevent Groovy compilation error.
+                    // This multi-line block ensures all cleanup commands execute reliably.
                     sh """
                         # 1. Remove all empty lines, leading/trailing whitespace (safe sed)
-                        sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config.temp
+                        sed -i -e '/^$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\$//' .kube/config.temp
                         
                         # 2. Use 'tr' to remove all double quotes (") which are the common corruption cause
                         tr -d '"' < .kube/config.temp > .kube/config.temp.tmp
