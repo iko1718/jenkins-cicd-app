@@ -5,29 +5,37 @@ node {
         checkout scm
     }
 
-   stage('Build Image') {
-        docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
-            withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) { // ⬅️ ADD THIS LINE
-                sh 'mkdir -p .docker' // ⬅️ AND THIS LINE
-                echo "Building Docker image: ${imageTag}"
-                sh "docker build -t ${imageTag} ."
-            }
-        }
-    }
+    stage('Build Image') {
+        // Run commands inside a docker container which has the docker client installed
+        docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
+            // FIX: Use DOCKER_CONFIG in the workspace to prevent "permission denied" error
+            withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) {
+                sh 'mkdir -p .docker'
+                echo "Building Docker image: ${imageTag}"
+                sh "docker build -t ${imageTag} ."
+            }
+        }
+    }
 
     stage('Push Image') {
+        // Run commands inside a docker container which has the docker client installed
         docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
-            withCredentials([usernamePassword(
-                credentialsId: 'dockerhub-creds',
-                usernameVariable: 'DOCKER_USER',
-                passwordVariable: 'DOCKER_PASSWORD'
-            )]) {
-                echo "Logging into Docker Hub and pushing image: ${imageTag}"
-                sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin"
-                sh "docker push ${imageTag}"
-                sh "docker tag ${imageTag} sonaliponnappaa/cicd-app:latest"
-                sh "docker push sonaliponnappaa/cicd-app:latest"
-                sh "docker logout"
+            // FIX: Use DOCKER_CONFIG in the workspace for secure login
+            withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) {
+                sh 'mkdir -p .docker'
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    echo "Logging into Docker Hub and pushing image: ${imageTag}"
+                    sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin"
+                    
+                    sh "docker push ${imageTag}"
+                    sh "docker tag ${imageTag} sonaliponnappaa/cicd-app:latest"
+                    sh "docker push sonaliponnappaa/cicd-app:latest"
+                    sh "docker logout"
+                }
             }
         }
     }
@@ -35,6 +43,7 @@ node {
     // Optional: Uncomment this stage once kubectl is installed and configured
     /*
     stage('Deploy to K8s') {
+        // Run kubectl commands inside a container with kubectl installed
         docker.image('bitnami/kubectl:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
             withCredentials([string(
                 credentialsId: 'minikube-config',
@@ -45,8 +54,8 @@ node {
 
                 echo "Deploying image ${imageTag} to Kubernetes..."
 
-                // Write kubeconfig to file
-                writeFile file: kubeconfigFile, text: "${KUBECFG_CONTENT}"
+                // Write kubeconfig to file using sh, as this is a scripted pipeline block
+                sh "echo \"\${KUBECFG_CONTENT}\" > ${kubeconfigFile}"
 
                 // Replace image placeholder
                 sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
