@@ -41,7 +41,7 @@ node {
     }
 
     stage('Deploy to K8s') {
-        // FIX: Add --entrypoint='' to bypass the bitnami/kubectl image's default entrypoint
+        // Fix: Add --entrypoint='' to bypass the bitnami/kubectl image's default entrypoint
         docker.image('bitnami/kubectl:latest').inside("--entrypoint='' -v /var/run/docker.sock:/var/run/docker.sock") {
             withCredentials([string(
                 credentialsId: 'minikube-config',
@@ -52,8 +52,9 @@ node {
 
                 echo "Deploying image ${imageTag} to Kubernetes..."
 
-                // Write kubeconfig to a temporary file using shell
-                sh "echo \"\${KUBECFG_CONTENT}\" > ${kubeconfigFile}"
+                // FIX: Use writeFile to safely store the multiline Kubeconfig secret (KUBECFG_CONTENT)
+                // This prevents shell interpolation errors (the 'yaml: mapping values...' issue).
+                writeFile file: kubeconfigFile, text: KUBECFG_CONTENT
 
                 // Replace image placeholder with the new image tag
                 sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
@@ -62,7 +63,7 @@ node {
                 sh "kubectl --kubeconfig=${kubeconfigFile} apply -f ${deploymentFile}"
                 echo "Deployment triggered successfully for image: ${imageTag}"
 
-                // Revert the deployment file and cleanup the temporary kubeconfig file
+                // Cleanup
                 sh "git checkout ${deploymentFile}"
                 sh "rm ${kubeconfigFile}"
             }
