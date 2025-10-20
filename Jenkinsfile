@@ -8,7 +8,9 @@ node {
     }
 
     stage('Build Image') {
+        // Use Docker-in-Docker pattern
         docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
+            // Set DOCKER_CONFIG in the workspace for permission safety
             withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) {
                 sh 'mkdir -p .docker'
                 echo "Building Docker image: ${imageTag}"
@@ -18,7 +20,9 @@ node {
     }
 
     stage('Push Image') {
+        // Use Docker-in-Docker pattern
         docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
+            // Set DOCKER_CONFIG in the workspace for permission safety
             withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) {
                 sh 'mkdir -p .docker'
                 withCredentials([usernamePassword(
@@ -30,7 +34,7 @@ node {
                     sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin"
                     
                     sh "docker push ${imageTag}"
-                    // FIX: Tag and push the :latest tag correctly
+                    // Tag and push the :latest tag
                     sh "docker tag ${imageTag} sonaliponnappaa/cicd-app:latest"
                     sh "docker push sonaliponnappaa/cicd-app:latest"
                     sh "docker logout"
@@ -40,11 +44,11 @@ node {
     }
 
     stage('Deploy to K8s') {
-        // Using bitnami/kubectl image for Kubernetes operations
+        // Use bitnami/kubectl image for Kubernetes operations
         docker.image('bitnami/kubectl:latest').inside("--entrypoint='' -v /var/run/docker.sock:/var/run/docker.sock") {
             withCredentials([string(
                 credentialsId: 'minikube-config',
-                variable: 'KUBECFG_CONTENT' // This is the raw kubeconfig content
+                variable: 'KUBECFG_CONTENT' // Raw kubeconfig content
             )]) {
                 def kubeconfigFilePath = "${pwd()}/.kube/config"
 
@@ -54,7 +58,7 @@ node {
 
                     // 1. Explicitly create directory and write the credential content
                     sh 'mkdir -p .kube' 
-                    // .trim() removes leading/trailing whitespace, which is crucial for YAML
+                    // .trim() removes leading/trailing whitespace (crucial fix for YAML)
                     writeFile file: '.kube/config', text: KUBECFG_CONTENT.trim()
                     sh 'chmod 600 .kube/config'
 
