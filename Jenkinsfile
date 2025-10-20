@@ -6,24 +6,21 @@ pipeline {
         stage('Setup Tools') {
             steps {
                 sh '''
-                echo "--- Installing kubectl ---"
+                echo "--- Installing kubectl locally in the workspace ---"
                 
                 # 1. Get the latest stable Kubernetes version number
                 KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
                 
-                # 2. Download the kubectl binary (assuming Linux/amd64 agent)
+                # 2. Download the kubectl binary to the CURRENT WORKING DIRECTORY (./kubectl)
+                # This directory is the build workspace, which the Jenkins user can always write to.
                 curl -LO "https://storage.googleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
                 
                 # 3. Make the binary executable
                 chmod +x ./kubectl
                 
-                # 4. Move it to a directory that is in the PATH (e.g., /usr/local/bin)
-                # NOTE: This step might require elevated permissions (sudo) depending on your Jenkins agent configuration.
-                # If this step fails due to permission errors, you may need to install it to a local bin directory 
-                # or contact your Jenkins administrator.
-                mv ./kubectl /usr/local/bin/kubectl
+                # NOTE: The 'mv' command to /usr/local/bin has been removed to avoid Permission Denied errors.
                 
-                echo "kubectl version: $(kubectl version --client --short)"
+                echo "kubectl downloaded and ready in: $PWD/kubectl"
                 '''
             }
         }
@@ -36,6 +33,10 @@ pipeline {
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')
                 ]) {
                     sh '''
+                    # Add the current directory (where ./kubectl is) to the execution PATH.
+                    # This allows the 'kubectl' command to be found without specifying './kubectl'.
+                    export PATH=$PATH:$PWD
+                    
                     echo "Kubeconfig secret file successfully accessed at: ****"
 
                     # Set the KUBECONFIG environment variable to the path provided by Jenkins
@@ -43,6 +44,8 @@ pipeline {
 
                     # --- SECURITY CHECK ---
                     echo "--- Testing Kubernetes Connection ---"
+                    
+                    # This command will now succeed because the PATH is set correctly.
                     kubectl cluster-info
 
                     # --- DEPLOYMENT STEP (Replace with your actual commands) ---
