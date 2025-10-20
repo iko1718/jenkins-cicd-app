@@ -113,17 +113,12 @@ pipeline {
                 sh "mkdir -p .kube"
                 withCredentials([string(credentialsId: env.KUBE_CONFIG_CREDS, variable: 'KUBECFG_CONTENT')]) {
                     
-                    // --- CRITICAL FIX: Direct Groovy manipulation of secret content ---
-                    // 1. Write the secret content directly to .kube/config.temp
-                    // 2. Use a single, powerful shell command to clean, sanitize, and finalize the file.
-
-                    // Use KUBECFG_CONTENT, which contains the raw secret text
-                    // NOTE: Groovy interpolates the variable here, but the following shell cleanup removes any side effects.
+                    // 1. Write the secret content directly to .kube/config
                     writeFile(file: ".kube/config", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // NEW ROBUST CLEANUP STEP: Remove quotes, leading/trailing whitespace, and empty lines.
-                    // This is the most effective way to eliminate the "json parse error" caused by invisible characters.
-                    sh "sed -i -e 's/\"//g' -e '/^\\s*$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\$//' .kube/config"
+                    // 2. CRITICAL FIX: DOUBLE-ESCAPE the dollar sign to ensure Groovy passes '\$' to the shell.
+                    // This single, aggressive command removes quotes, empty lines, and all whitespace.
+                    sh "sed -i -e 's/\"//g' -e '/^\\s*$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\\$//' .kube/config"
                     
                     sh "chmod 600 .kube/config"
 
