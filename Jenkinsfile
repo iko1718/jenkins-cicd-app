@@ -1,11 +1,11 @@
 // Jenkinsfile to deploy an application to a Kubernetes cluster using a Secret File credential.
 
 pipeline {
-    // We use a Docker agent that already has kubectl installed.
+    // FIX: Switched to a known stable image for kubectl (lachlanevenson/k8s-kubectl:v1.29.0)
     agent {
         docker {
-            image 'bitnami/kubectl:1.29'
-            args '-u root' // Necessary in some environments to run commands easily
+            image 'lachlanevenson/k8s-kubectl:v1.29.0'
+            args '-u root' // Helps ensure permissions inside the container
         }
     }
 
