@@ -22,7 +22,7 @@ pipeline {
                     // Credentials ID: dockerhub-creds
                     docker.withRegistry('', 'dockerhub-creds') {
                         echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag}"
-                        // Build the image using the simple name
+                        // Build the image and store the image object reference
                         docker.build("${DOCKER_IMAGE}:${imageTag}", '.')
                     }
                 }
@@ -34,29 +34,27 @@ pipeline {
                 // We use the docker tool agent for this step
                 script {
                     def imageTag = env.BUILD_NUMBER
+                    
+                    // Retrieve the image object by its tag
+                    def customImage = docker.image("${DOCKER_IMAGE}:${imageTag}")
+                    
                     // Credentials ID: dockerhub-creds
-                    // The withDockerRegistry block handles the secure login
+                    // This block securely logs in and exposes credentials to Groovy Docker functions
                     docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-creds') {
                         echo "Logging into Docker Hub and pushing image: ${DOCKER_IMAGE}:${imageTag}"
                         
-                        // --- Simplified Push Logic using `sh` command ---
-                        // We use `sh` to run the simple push command, avoiding Groovy's implicit FQDN tagging.
-
-                        // 1. Push the version-specific tag
+                        // 1. Push the version-specific tag (Groovy method handles authentication)
                         retry(3) {
                             echo "Attempting versioned docker push (Attempt ${currentBuild.number})..."
-                            sh "docker push ${DOCKER_IMAGE}:${imageTag}" 
+                            customImage.push()
                         }
 
-                        // 2. Tag the image as 'latest' (using simple names)
-                        sh "docker tag ${DOCKER_IMAGE}:${imageTag} ${DOCKER_IMAGE}:latest"
-                        
-                        // 3. Push 'latest'
+                        // 2. Tag and push 'latest' (Groovy method handles authentication)
+                        customImage.tag('latest')
                         retry(3) {
                             echo "Attempting 'latest' docker push (Attempt ${currentBuild.number})..."
-                            sh "docker push ${DOCKER_IMAGE}:latest"
+                            customImage.push('latest')
                         }
-                        // --- End Simplified Push Logic ---
                     }
                 }
             }
