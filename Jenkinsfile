@@ -1,82 +1,87 @@
-node {
-    // Define the image tag using the build number
-    def imageTag = "sonaliponnappaa/cicd-app:${env.BUILD_NUMBER}"
-    def deploymentFile = 'kubernetes-deployment.yaml'
+pipeline {
+    agent any
 
-    stage('Checkout SCM') {
-        checkout scm
+    // Define environment variables used throughout the pipeline
+    environment {
+        DOCKER_IMAGE = 'sonaliponnappaa/cicd-app'
     }
 
-    stage('Build Image') {
-        // Use Docker-in-Docker pattern
-        docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
-            // Set DOCKER_CONFIG in the workspace for permission safety
-            withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) {
-                sh 'mkdir -p .docker'
-                echo "Building Docker image: ${imageTag}"
-                sh "docker build -t ${imageTag} ."
+    stages {
+        stage('Checkout SCM') {
+            steps {
+                // Checkout the repository code
+                checkout scm
             }
         }
-    }
 
-    stage('Push Image') {
-        // Use Docker-in-Docker pattern
-        docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
-            // Set DOCKER_CONFIG in the workspace for permission safety
-            withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) {
-                sh 'mkdir -p .docker'
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-creds',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )]) {
-                    echo "Logging into Docker Hub and pushing image: ${imageTag}"
-                    sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin"
-                    
-                    sh "docker push ${imageTag}"
-                    // Tag and push the :latest tag
-                    sh "docker tag ${imageTag} sonaliponnappaa/cicd-app:latest"
-                    sh "docker push sonaliponnappaa/cicd-app:latest"
-                    sh "docker logout"
+        stage('Build Image') {
+            steps {
+                // We use the docker tool agent for this step
+                script {
+                    def imageTag = env.BUILD_NUMBER
+                    docker.withRegistry('', 'docker-hub-credentials') {
+                        echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag}"
+                        def customImage = docker.build("${DOCKER_IMAGE}:${imageTag}", '.')
+                    }
                 }
             }
         }
-    }
 
-    stage('Deploy to K8s') {
-        // Use bitnami/kubectl image for Kubernetes operations
-        docker.image('bitnami/kubectl:latest').inside("--entrypoint='' -v /var/run/docker.sock:/var/run/docker.sock") {
-            withCredentials([string(
-                credentialsId: 'minikube-config',
-                variable: 'KUBECFG_CONTENT' // Raw kubeconfig content
-            )]) {
-                def kubeconfigFilePath = "${pwd()}/.kube/config"
-
-                // Use try-finally to ensure cleanup runs even if deployment fails
-                try {
-                    echo "Deploying image ${imageTag} to Kubernetes..."
-
-                    // 1. Explicitly create directory and write the credential content
-                    sh 'mkdir -p .kube' 
-                    // .trim() removes leading/trailing whitespace (crucial fix for YAML)
-                    writeFile file: '.kube/config', text: KUBECFG_CONTENT.trim()
-                    sh 'chmod 600 .kube/config'
-
-                    // 2. Set KUBECONFIG environment variable and run kubectl
-                    withEnv(["KUBECONFIG=${kubeconfigFilePath}"]) {
-                        
-                        // 3. Replace image placeholder
-                        sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
-
-                        // 4. Apply deployment
-                        sh "kubectl apply -f ${deploymentFile}"
-
-                        echo "Deployment triggered successfully for image: ${imageTag}"
+        stage('Push Image') {
+            steps {
+                // We use the docker tool agent for this step
+                script {
+                    def imageTag = env.BUILD_NUMBER
+                    docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-credentials') {
+                        echo "Logging into Docker Hub and pushing image: ${DOCKER_IMAGE}:${imageTag}"
+                        def customImage = docker.image("${DOCKER_IMAGE}:${imageTag}")
+                        customImage.push()
+                        // Tag and push 'latest'
+                        customImage.tag('latest')
+                        customImage.push('latest')
                     }
-                } finally {
-                    // Cleanup: reset the deployment file and remove the config file/directory
-                    sh "git checkout ${deploymentFile}"
-                    sh "rm -rf .kube"
+                }
+            }
+        }
+
+        stage('Deploy to K8s') {
+            agent {
+                docker {
+                    // Use a kubectl image to run deployment commands
+                    image 'bitnami/kubectl:latest'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                }
+            }
+            steps {
+                // Get the Kubeconfig content from Jenkins credentials
+                withCredentials([string(credentialsId: 'minikube-config', variable: 'KUBECFG_CONTENT')]) {
+                    withEnv(["IMAGE_TAG=${BUILD_NUMBER}"]) {
+                        sh "mkdir -p .kube"
+
+                        // Write the Kubeconfig secret content to a file
+                        writeFile file: '.kube/config', text: "$KUBECFG_CONTENT"
+
+                        // --- CRITICAL FIX: Sanitize the file content ---
+                        // This command removes non-printable control characters and trims excess
+                        // whitespace from the beginning/end of each line, ensuring pure YAML.
+                        sh "sed -i 's/[[:cntrl:]]//g; s/^[ \\t]*//; s/[ \\t]*\$//' .kube/config"
+
+                        sh 'chmod 600 .kube/config'
+
+                        echo "Deploying image ${DOCKER_IMAGE}:${IMAGE_TAG} to Kubernetes..."
+
+                        // Replace the placeholder image tag in kubernetes-deployment.yaml
+                        sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${DOCKER_IMAGE}:${IMAGE_TAG}|g' kubernetes-deployment.yaml"
+
+                        // Apply the deployment using the cleaned config file
+                        withEnv(["KUBECONFIG=.kube/config"]) {
+                            sh "kubectl apply -f kubernetes-deployment.yaml"
+                        }
+
+                        // Clean up the working directory after deployment
+                        sh 'git checkout kubernetes-deployment.yaml'
+                        sh 'rm -rf .kube'
+                    }
                 }
             }
         }
