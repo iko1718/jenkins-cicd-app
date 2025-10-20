@@ -5,7 +5,7 @@ pipeline {
     agent {
         docker {
             image 'ubuntu:latest'
-            args '-u root' // Helps ensure permissions inside the container
+            args '-u root' // Helps ensure permissions inside the container for installation
         }
     }
 
@@ -15,18 +15,28 @@ pipeline {
                 sh '''
                 echo "Installing dependencies..."
                 
-                # 1. Update and install necessary packages (curl, gnupg, apt-transport-https)
-                # FIX: Added 'gnupg' to resolve the "E: gnupg... not installed" error.
+                # 1. Install necessary utility packages (curl, gnupg, etc.)
                 apt-get update -y
-                apt-get install -y curl apt-transport-https gnupg
-
-                # 2. Install kubectl (using the standard Kubernetes repository setup)
-                curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-                echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | tee /etc/apt/sources.list.d/kubernetes.list
+                apt-get install -y curl gnupg apt-transport-https
                 
+                # --- START KUBECTL INSTALL (Modern Method) ---
+                
+                # 2. Add Kubernetes GPG Key (using the modern, secured keyring method)
+                install -m 0755 -d /etc/apt/keyrings
+                
+                # Download the key and register it with gpg --dearmor
+                curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+                
+                # 3. Add the Kubernetes repository (targeting v1.29 path)
+                echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
+                
+                # 4. Update package index to include the new repository
                 apt-get update -y
-                # Install kubectl at the version corresponding to our target cluster, v1.29.0
+                
+                # 5. Install kubectl at the specific version v1.29.0
                 apt-get install -y kubectl=1.29.0-00 
+                
+                # --- END KUBECTL INSTALL ---
                 
                 echo "kubectl installed successfully."
                 kubectl version --client --short
@@ -42,19 +52,19 @@ pipeline {
 
         stage('Deploy to Kubernetes') {
             steps {
-                // 1. Use the Secret File credential named 'kubeconfig'
+                // The 'kubeconfig' Secret File is mounted and the path is stored in KUBECONFIG_FILE_PATH
                 withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE_PATH')]) {
                     
-                    // 2. Set the KUBECONFIG environment variable. This is the key step.
+                    // 1. Set the KUBECONFIG environment variable for kubectl
                     sh 'export KUBECONFIG=${KUBECONFIG_FILE_PATH}'
                     
                     echo "KUBECONFIG set to: ${KUBECONFIG_FILE_PATH}"
 
-                    // 3. Run kubectl commands using the embedded configuration
+                    // 2. Run kubectl commands using the embedded configuration
                     sh '''
                     echo "--- Applying Kubernetes deployment (nginx-deployment.yaml) ---"
                     
-                    # Check cluster connection
+                    # Check cluster connection (this will test the KUBECONFIG file)
                     kubectl cluster-info
 
                     # Apply the deployment YAML
@@ -65,7 +75,7 @@ pipeline {
                     # Wait for the deployment to become ready
                     kubectl wait --for=condition=Available deployment/nginx-web --timeout=120s
 
-                    # Apply a simple NodePort service to expose the app (Minikube access)
+                    # Apply a simple NodePort service to expose the app
                     kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Service
