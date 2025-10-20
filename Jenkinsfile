@@ -47,25 +47,28 @@ node {
                 credentialsId: 'minikube-config',
                 variable: 'KUBECFG_CONTENT'
             )]) {
-                def kubeconfigFile = 'kubeconfig-temp.yaml'
+                def kubeconfigFileEncoded = 'kubeconfig-encoded.b64'
                 def deploymentFile = 'kubernetes-deployment.yaml'
 
                 echo "Deploying image ${imageTag} to Kubernetes..."
 
-                // FINAL FIX: Use writeFile with .trim() to ensure the secret content (KUBECFG_CONTENT) 
-                // is written without any leading/trailing whitespace or extra newlines that corrupt the YAML.
-                writeFile file: kubeconfigFile, text: KUBECFG_CONTENT.trim()
+                // 1. Convert the raw secret text (KUBECFG_CONTENT) into a base64 encoded string
+                def kubeconfigBase64 = KUBECFG_CONTENT.trim().encodeBase64().toString()
+
+                // 2. Write the SINGLE-LINE base64 string to a temporary file. This is immune to YAML corruption.
+                writeFile file: kubeconfigFileEncoded, text: kubeconfigBase64
 
                 // Replace image placeholder with the new image tag
                 sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
 
-                // Apply deployment to Kubernetes cluster using the temporary kubeconfig
-                sh "kubectl --kubeconfig=${kubeconfigFile} apply -f ${deploymentFile}"
+                // 3. Decode the file and pipe the content directly into kubectl's stdin using the '--kubeconfig=-' flag.
+                // This is the most reliable way to handle Kubeconfig secrets.
+                sh "base64 -d ${kubeconfigFileEncoded} | kubectl --kubeconfig=- apply -f ${deploymentFile}"
                 echo "Deployment triggered successfully for image: ${imageTag}"
 
                 // Cleanup
                 sh "git checkout ${deploymentFile}"
-                sh "rm ${kubeconfigFile}"
+                sh "rm ${kubeconfigFileEncoded}"
             }
         }
     }
