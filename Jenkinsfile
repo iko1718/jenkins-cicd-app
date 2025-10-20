@@ -24,11 +24,10 @@ pipeline {
 
         stage('Initialize and Deploy') {
             steps {
-                // Switching to triple-double quotes (""") and using backslashes to escape $ signs 
-                // for robustness in complex Groovy environments.
                 withCredentials([
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
                 ]) {
+                    // Using triple-double quotes (""") and backslash escaping for extreme robustness.
                     sh """
                     # 1. Add the current directory (where ./kubectl is) to the execution PATH.
                     export PATH=\$PATH:\$PWD
@@ -36,20 +35,19 @@ pipeline {
                     # 2. Define the path for the new, CLEAN kubeconfig file
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
 
-                    echo "--- Decoding and cleaning up Kubeconfig (Final Cut | TR Fix) ---"
+                    echo "--- Decoding and cleaning up Kubeconfig (Final Sub-Shell Fix) ---"
 
                     # --- MOST ROBUST DECODING STEPS ---
-                    # Uses grep to find the line, cut by the colon delimiter, and 'tr' to remove all whitespace 
-                    # before passing the pure Base64 string to 'base64 -d'. This avoids all quote conflicts.
-                    
+                    # Uses a single command substitution block to guarantee the entire pipe chain runs correctly on the file content.
+
                     # 1. Decode CA Certificate 
-                    grep 'certificate-authority-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d > ca.crt
+                    ( grep 'certificate-authority-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d ) > ca.crt
 
                     # 2. Decode Client Certificate
-                    grep 'client-certificate-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d > client.crt
+                    ( grep 'client-certificate-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d ) > client.crt
 
                     # 3. Decode Client Key
-                    grep 'client-key-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d > client.key
+                    ( grep 'client-key-data:' \$KUBECONFIG_SOURCE | cut -d: -f2 | tr -d ' ' | base64 -d ) > client.key
 
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
 
