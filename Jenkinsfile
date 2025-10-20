@@ -35,7 +35,11 @@ pipeline {
                     def imageTag = env.BUILD_NUMBER
                     
                     echo "Starting authenticated shell push for ${DOCKER_IMAGE}:${imageTag}"
-
+                    
+                    // Add an initial stabilization delay to combat persistent 504s
+                    echo "Network stabilization: Waiting 15 seconds before first push attempt..."
+                    sleep 15
+                    
                     // Use withCredentials to securely inject username/password variables for raw shell push.
                     withCredentials([
                         usernamePassword(
@@ -47,7 +51,9 @@ pipeline {
                         // 1. Perform authenticated login using standard input
                         sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
                         
-                        // Enhanced retry logic with exponential backoff
+                        // Define sandbox-safe delays for retries (in seconds)
+                        // Delays are: 0s, 20s, 40s, 80s (Max 5 attempts total)
+                        def delays = [0, 20, 40, 80, 160] 
                         def maxRetries = 5
                         def retryCount = 0
                         def pushSuccess = false
@@ -58,11 +64,12 @@ pipeline {
                                 retryCount++
                                 echo "Attempt ${retryCount}/${maxRetries}: Pushing ${DOCKER_IMAGE}:${imageTag}"
                                 
-                                // Add delay between retries (exponential backoff: 10, 20, 40, 80 seconds)
+                                // Apply sandbox-safe exponential delay from the predefined list
                                 if (retryCount > 1) {
-                                    def delaySeconds = Math.pow(2, retryCount - 2) * 10
+                                    def delaySeconds = delays[retryCount - 1]
                                     echo "Waiting ${delaySeconds} seconds before retry..."
-                                    sleep time: delaySeconds.toInteger(), unit: 'SECONDS'
+                                    // Use 'sleep' inside the Groovy script block
+                                    sleep time: delaySeconds, unit: 'SECONDS'
                                 }
                                 
                                 sh "docker push ${DOCKER_IMAGE}:${imageTag}"
@@ -81,7 +88,7 @@ pipeline {
                         if (pushSuccess) {
                             sh "docker tag ${DOCKER_IMAGE}:${imageTag} ${DOCKER_IMAGE}:latest"
                             
-                            // Push latest with same retry logic
+                            // Push latest with same retry logic (resetting counters)
                             def latestSuccess = false
                             retryCount = 0
                             
@@ -91,9 +98,9 @@ pipeline {
                                     echo "Attempt ${retryCount}/${maxRetries}: Pushing ${DOCKER_IMAGE}:latest"
                                     
                                     if (retryCount > 1) {
-                                        def delaySeconds = Math.pow(2, retryCount - 2) * 10
+                                        def delaySeconds = delays[retryCount - 1]
                                         echo "Waiting ${delaySeconds} seconds before retry..."
-                                        sleep time: delaySeconds.toInteger(), unit: 'SECONDS'
+                                        sleep time: delaySeconds, unit: 'SECONDS'
                                     }
                                     
                                     sh "docker push ${DOCKER_IMAGE}:latest"
