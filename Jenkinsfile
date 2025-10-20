@@ -38,31 +38,25 @@ pipeline {
                     
                     echo "--- Decoding and cleaning up Kubeconfig ---"
                     
-                    # Function to reliably extract and decode Base64 data
-                    extract_and_decode() {
-                        # Isolates the Base64 string, removes ALL whitespace (including spaces and newlines) for clean decoding, and saves to file.
-                        grep "$1" $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > "$2"
-                    }
-
-                    # Decode CA Certificate
-                    extract_and_decode 'certificate-authority-data:' ca.crt
+                    # 1. Decode CA Certificate (Explicit commands for robustness)
+                    grep 'certificate-authority-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > ca.crt
                     
-                    # Decode Client Certificate
-                    extract_and_decode 'client-certificate-data:' client.crt
+                    # 2. Decode Client Certificate
+                    grep 'client-certificate-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > client.crt
                     
-                    # Decode Client Key
-                    extract_and_decode 'client-key-data:' client.key
+                    # 3. Decode Client Key
+                    grep 'client-key-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > client.key
                     
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
                     
-                    # 3. Create a NEW KUBECONFIG using file paths and the NEW EXTERNAL IP.
-                    # This uses the provided VM IP: 104.214.168.195
+                    # 4. Create a NEW KUBECONFIG using file paths and the VM's PRIVATE IP.
+                    # **CRITICAL CHANGE**: Using the reliable private IP and port 8443
                     cat << EOF > $KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
 - cluster:
     certificate-authority: $PWD/ca.crt
-    server: https://104.214.168.195:8443
+    server: https://192.168.49.2:8443
   name: minikube
 contexts:
 - context:
@@ -80,13 +74,13 @@ users:
     client-key: $PWD/client.key
 EOF
 
-                    # 4. Set KUBECONFIG to point to the new, clean file
+                    # 5. Set KUBECONFIG to point to the new, clean file
                     export KUBECONFIG=$KUBECONFIG_CLEAN
 
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
                     
-                    # This test will now attempt to connect to the provided VM IP.
+                    # This test will now attempt to connect to the private IP on port 8443
                     kubectl cluster-info
                     
                     # --- DEPLOYMENT STEP ---
