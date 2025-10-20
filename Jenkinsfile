@@ -16,14 +16,26 @@ pipeline {
 
         stage('Build Image') {
             steps {
-                // We use the docker tool agent for this step
                 script {
                     def imageTag = env.BUILD_NUMBER
-                    // Use Groovy login just for image building and simple tagging
-                    docker.withRegistry('', 'dockerhub-creds') {
-                        echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag}"
-                        // Build the image and store the image object reference
-                        docker.build("${DOCKER_IMAGE}:${imageTag}", '.')
+                    
+                    // Use credentials to perform manual shell login/build, bypassing flaky Groovy wrappers
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'dockerhub-creds',
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASS'
+                        )
+                    ]) {
+                        // 1. Robustly log in for base image pulls (with retry for 503/504 errors)
+                        retry(3) {
+                            echo "Attempting robust docker login for base image pull..."
+                            sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                        }
+                        
+                        echo "Building Docker image: ${DOCKER_IMAGE}:${imageTag} using shell command..."
+                        // 2. Perform manual shell build
+                        sh "docker build -t ${DOCKER_IMAGE}:${imageTag} ."
                     }
                 }
             }
@@ -48,17 +60,19 @@ pipeline {
                             passwordVariable: 'DOCKER_PASS'
                         )
                     ]) {
-                        // 1. Perform authenticated login using standard input
-                        sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                        // 1. Robustly log in again just before push (with retry)
+                        retry(3) {
+                            echo "Attempting robust docker login before push..."
+                            sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                        }
                         
                         // Define sandbox-safe delays for retries (in seconds)
-                        // Delays are: 0s, 20s, 40s, 80s (Max 5 attempts total)
                         def delays = [0, 20, 40, 80, 160] 
                         def maxRetries = 5
                         def retryCount = 0
                         def pushSuccess = false
                         
-                        // --- Push Versioned Tag ---
+                        // --- Push Versioned Tag with Exponential Backoff ---
                         while (!pushSuccess && retryCount < maxRetries) {
                             try {
                                 retryCount++
@@ -68,7 +82,6 @@ pipeline {
                                 if (retryCount > 1) {
                                     def delaySeconds = delays[retryCount - 1]
                                     echo "Waiting ${delaySeconds} seconds before retry..."
-                                    // Use 'sleep' inside the Groovy script block
                                     sleep time: delaySeconds, unit: 'SECONDS'
                                 }
                                 
@@ -144,7 +157,6 @@ pipeline {
                         sh "tr -cd '\\11\\12\\15\\40-\\176' < .kube/config.temp > .kube/config"
 
                         // 2. Remove all blank lines and all leading/trailing whitespace in-place
-                        // Uses single quotes to prevent Groovy compilation errors with '$'
                         sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config'
                         
                         // Clean up temporary file
