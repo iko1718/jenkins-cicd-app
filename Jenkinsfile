@@ -1,18 +1,40 @@
 // Jenkinsfile to deploy an application to a Kubernetes cluster using a Secret File credential.
 
 pipeline {
-    // FIX: Switched to a known stable image for kubectl (lachlanevenson/k8s-kubectl:v1.29.0)
+    // FIX: Switched to a standard 'ubuntu' image and will install kubectl manually.
     agent {
         docker {
-            image 'lachlanevenson/k8s-kubectl:v1.29.0'
+            image 'ubuntu:latest'
             args '-u root' // Helps ensure permissions inside the container
         }
     }
 
     stages {
+        stage('Setup Tools') {
+            steps {
+                sh '''
+                echo "Installing dependencies..."
+                
+                # 1. Update and install necessary packages (curl, apt-transport-https)
+                apt-get update -y
+                apt-get install -y curl apt-transport-https
+
+                # 2. Install kubectl (using the standard Kubernetes repository setup)
+                curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+                echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | tee /etc/apt/sources.list.d/kubernetes.list
+                
+                apt-get update -y
+                # Install kubectl at the version corresponding to our target cluster, v1.29.0
+                apt-get install -y kubectl=1.29.0-00 
+                
+                echo "kubectl installed successfully."
+                kubectl version --client --short
+                '''
+            }
+        }
+
         stage('Checkout Code') {
             steps {
-                // Assuming your source code (including nginx-deployment.yaml) is checked out here.
                 echo 'Source code checked out.'
             }
         }
@@ -29,10 +51,10 @@ pipeline {
                     echo "KUBECONFIG set to: ${KUBECONFIG_FILE_PATH}"
 
                     // 3. Run kubectl commands using the embedded configuration
-                    sh """
+                    sh '''
                     echo "--- Applying Kubernetes deployment (nginx-deployment.yaml) ---"
                     
-                    # Check cluster connection (optional but good for debugging)
+                    # Check cluster connection
                     kubectl cluster-info
 
                     # Apply the deployment YAML
@@ -60,7 +82,7 @@ spec:
 EOF
 
                     echo "Service exposed via NodePort."
-                    """
+                    '''
                 }
             }
         }
@@ -68,9 +90,6 @@ EOF
     
     post {
         always {
-            // Clean up the deployment regardless of stage success/failure (optional)
-            // sh 'kubectl delete deployment nginx-web || true'
-            // sh 'kubectl delete service nginx-web-service || true'
             echo "Pipeline finished."
         }
     }
