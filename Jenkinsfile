@@ -5,11 +5,44 @@ node {
     stage('Checkout SCM') {
         checkout scm
     }
-// ... (Build and Push stages)
+
+    stage('Build Image') {
+        // Run docker client inside a separate container, mounting the socket for communication
+        docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
+            // Fix: Use DOCKER_CONFIG in the workspace to prevent "permission denied" error
+            withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) {
+                sh 'mkdir -p .docker'
+                echo "Building Docker image: ${imageTag}"
+                sh "docker build -t ${imageTag} ."
+            }
+        }
+    }
+
+    stage('Push Image') {
+        docker.image('docker:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
+            // Fix: Use DOCKER_CONFIG in the workspace for secure login
+            withEnv(["DOCKER_CONFIG=${pwd()}/.docker"]) {
+                sh 'mkdir -p .docker'
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    echo "Logging into Docker Hub and pushing image: ${imageTag}"
+                    sh "echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin"
+                    
+                    sh "docker push ${imageTag}"
+                    sh "docker tag ${imageTag} sonaliponnappaa/cicd-app:latest"
+                    sh "docker push sonaliponnappaa/cicd-app:latest"
+                    sh "docker logout"
+                }
+            }
+        }
+    }
 
     stage('Deploy to K8s') {
-        // Run kubectl commands inside a container with kubectl installed
-        docker.image('bitnami/kubectl:latest').inside('-v /var/run/docker.sock:/var/run/docker.sock') {
+        // FIX: Add --entrypoint='' to bypass the bitnami/kubectl image's default entrypoint
+        docker.image('bitnami/kubectl:latest').inside("--entrypoint='' -v /var/run/docker.sock:/var/run/docker.sock") {
             withCredentials([string(
                 credentialsId: 'minikube-config',
                 variable: 'KUBECFG_CONTENT'
