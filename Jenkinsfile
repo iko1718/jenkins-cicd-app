@@ -41,37 +41,37 @@ node {
     }
 
     stage('Deploy to K8s') {
-        // Fix: Add --entrypoint='' to bypass the bitnami/kubectl image's default entrypoint
+        // Using bitnami/kubectl image for Kubernetes operations
         docker.image('bitnami/kubectl:latest').inside("--entrypoint='' -v /var/run/docker.sock:/var/run/docker.sock") {
             withCredentials([string(
                 credentialsId: 'minikube-config',
-                variable: 'KUBECFG_CONTENT'
+                variable: 'KUBECFG_CONTENT' // This is the raw kubeconfig content
             )]) {
-                def kubeconfigFileEncoded = 'kubeconfig-encoded.b64'
                 def deploymentFile = 'kubernetes-deployment.yaml'
+                def kubeconfigFilePath = "${pwd()}/.kube/config"
 
                 echo "Deploying image ${imageTag} to Kubernetes..."
 
-                // *** FIX: Replaced encodeBase64() with the whitelisted Java utility. ***
-                // The Java Base64 utility is almost always approved in the Groovy Sandbox.
-                def kubeconfigBase64 = java.util.Base64.getEncoder().encodeToString(KUBECFG_CONTENT.trim().getBytes('UTF-8'))
+                // 1. Write the raw KUBECFG_CONTENT directly to a temporary file
+                writeFile file: '.kube/config', text: KUBECFG_CONTENT.trim()
 
-                // Write the safe, single-line Base64 string to a temporary file.
-                writeFile file: kubeconfigFileEncoded, text: kubeconfigBase64
+                // 2. Set KUBECONFIG environment variable to use the file.
+                withEnv(["KUBECONFIG=${kubeconfigFilePath}"]) {
+                    
+                    // 3. Replace image placeholder
+                    sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
 
-                // Replace image placeholder with the new image tag
-                sh "sed -i 's|PLACEHOLDER_IMAGE_URL|${imageTag}|g' ${deploymentFile}"
+                    // 4. Apply deployment (kubectl automatically uses $KUBECONFIG)
+                    sh """
+                    kubectl apply -f ${deploymentFile}
 
-                // Decode the file and pipe the content directly to kubectl.
-                sh """
-                base64 -d ${kubeconfigFileEncoded} | kubectl --kubeconfig=- apply -f ${deploymentFile}
-                
-                echo "Deployment triggered successfully for image: ${imageTag}"
-                
-                # Cleanup
-                git checkout ${deploymentFile}
-                rm ${kubeconfigFileEncoded}
-                """
+                    echo "Deployment triggered successfully for image: ${imageTag}"
+
+                    # Cleanup
+                    git checkout ${deploymentFile}
+                    rm -rf .kube
+                    """
+                }
             }
         }
     }
