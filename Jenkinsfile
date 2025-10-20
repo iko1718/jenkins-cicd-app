@@ -37,10 +37,15 @@ pipeline {
                     docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-creds') {
                         echo "Logging into Docker Hub and pushing image: ${DOCKER_IMAGE}:${imageTag}"
                         def customImage = docker.image("${DOCKER_IMAGE}:${imageTag}")
-                        customImage.push()
-                        // Tag and push 'latest'
-                        customImage.tag('latest')
-                        customImage.push('latest')
+                        
+                        // Added retry block to handle 504 Gateway Time-out errors
+                        retry(3) {
+                            echo "Attempting docker push (Attempt ${currentBuild.number})..."
+                            customImage.push()
+                            // Tag and push 'latest'
+                            customImage.tag('latest')
+                            customImage.push('latest')
+                        }
                     }
                 }
             }
@@ -70,7 +75,7 @@ pipeline {
                         sh "tr -cd '\\11\\12\\15\\40-\\176' < .kube/config.temp > .kube/config"
 
                         // 2. Remove all blank lines and all leading/trailing whitespace in-place
-                        // FIX: Changed outer quotes from "..." to '...' to stop Groovy from interpreting the '$'
+                        // Uses single quotes to prevent Groovy compilation errors with '$'
                         sh 'sed -i -e "/^$/d" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" .kube/config'
                         
                         // Clean up temporary file
