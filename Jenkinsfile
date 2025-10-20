@@ -36,21 +36,23 @@ pipeline {
                     # 2. Define the path for the new, CLEAN kubeconfig file
                     export KUBECONFIG_CLEAN=kubeconfig_clean.yaml
                     
-                    echo "--- Decoding and cleaning up Kubeconfig ---"
+                    echo "--- Decoding and cleaning up Kubeconfig (Final Attempt) ---"
                     
-                    # 1. Decode CA Certificate (Explicit commands for robustness)
-                    grep 'certificate-authority-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > ca.crt
+                    # --- ROBUST DECODING STEPS ---
+                    # We use 'awk' to reliably extract the base64 string and then pipe to base64 -d
+                    
+                    # 1. Decode CA Certificate 
+                    awk '/certificate-authority-data:/ {print $2}' $KUBECONFIG_SOURCE | base64 -d > ca.crt
                     
                     # 2. Decode Client Certificate
-                    grep 'client-certificate-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > client.crt
+                    awk '/client-certificate-data:/ {print $2}' $KUBECONFIG_SOURCE | base64 -d > client.crt
                     
                     # 3. Decode Client Key
-                    grep 'client-key-data:' $KUBECONFIG_SOURCE | awk '{print $2}' | sed -e 's/[[:space:]]//g' | base64 -d > client.key
+                    awk '/client-key-data:/ {print $2}' $KUBECONFIG_SOURCE | base64 -d > client.key
                     
                     echo "Certificates successfully extracted to ca.crt, client.crt, client.key"
                     
                     # 4. Create a NEW KUBECONFIG using file paths and the VM's TRUE AZURE PRIVATE IP.
-                    # This IP is routable between your two Azure VMs.
                     cat << EOF > $KUBECONFIG_CLEAN
 apiVersion: v1
 clusters:
@@ -80,14 +82,13 @@ EOF
                     # --- TESTING KUBERNETES CONNECTION ---
                     echo "--- Testing Kubernetes Connection ---"
                     
-                    # ADDED FLAG: This flag forces kubectl to skip certificate validation,
-                    # solving the 'unknown authority' error caused by Minikube's self-signed certs.
+                    # Added flag to skip TLS verification
                     kubectl cluster-info --insecure-skip-tls-verify 
                     
                     # --- DEPLOYMENT STEP ---
                     echo "--- Starting Deployment Logic ---"
                     
-                    # ADDED FLAG: All deployment steps must also skip TLS verification.
+                    # Apply deployment and service files, skipping TLS verification
                     kubectl apply -f deployment.yaml --insecure-skip-tls-verify
                     kubectl apply -f service.yaml --insecure-skip-tls-verify
 
