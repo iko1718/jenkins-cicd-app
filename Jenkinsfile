@@ -52,6 +52,7 @@ pipeline {
                         // 2. Push the version-specific tag
                         retry(3) {
                             echo "Attempting versioned docker push (Attempt ${currentBuild.number})..."
+                            // Pushing using the short name is key to avoiding the 504 error
                             sh "docker push ${DOCKER_IMAGE}:${imageTag}" 
                         }
 
