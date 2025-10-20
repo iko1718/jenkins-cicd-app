@@ -116,9 +116,16 @@ pipeline {
                     // 1. Write the secret content directly to .kube/config
                     writeFile(file: ".kube/config", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // 2. CRITICAL FIX: DOUBLE-ESCAPE the dollar sign to ensure Groovy passes '\$' to the shell.
-                    // This single, aggressive command removes quotes, empty lines, and all whitespace.
-                    sh "sed -i -e 's/\"//g' -e '/^\\s*$/d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\\$//' .kube/config"
+                    // 2. CRITICAL FIX: Use literal string (''') for shell commands containing '$'
+                    // This bypasses the Groovy compilation error entirely.
+                    sh '''
+                        # Remove quotes
+                        sed -i 's/"//g' .kube/config
+                        # Remove empty lines
+                        sed -i '/^\\s*$/d' .kube/config
+                        # Remove leading/trailing whitespace (this contains the problematic '$')
+                        sed -i -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' .kube/config
+                    '''
                     
                     sh "chmod 600 .kube/config"
 
