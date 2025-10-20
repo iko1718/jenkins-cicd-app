@@ -116,10 +116,11 @@ pipeline {
                     // 1. Write the secret content directly to .kube/config
                     writeFile(file: ".kube/config", text: "${KUBECFG_CONTENT}", encoding: 'UTF-8')
 
-                    // 2. CRITICAL FIX: Single, atomic sed command to sanitize everything.
-                    // This handles Windows line endings (\r), quotes, empty lines, and all whitespace.
+                    // 2. CRITICAL FIX: Double-escape all backslashes for Groovy/sed compatibility.
+                    // s/\\r//g: Removes Windows carriage returns.
+                    // /^\\s*$/d: Removes empty lines (where \s* means zero or more whitespace characters).
                     sh '''
-                        sed -i 's/\r//g; s/"//g; /^\s*$/d; s/^[[:space:]]*//; s/[[:space:]]*$//' .kube/config
+                        sed -i 's/\\r//g; s/"//g; /^\\s*$/d; s/^[[:space:]]*//; s/[[:space:]]*$//' .kube/config
                     '''
                     
                     sh "chmod 600 .kube/config"
