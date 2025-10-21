@@ -145,6 +145,126 @@ Before running the job, make sure these variables are correctly configured.
 | `KUBE_CONFIG_ID` | Credential ID for accessing Kubernetes (`kubeconfig` file). | `kubeconfig` |
 | `KUBE_SERVER_IP` | The reachable IP and port of the Kubernetes API Server. | `10.2.0.4:8443` |
 
+## 4. Pipeline Implementation: The Jenkinsfile Logic
+
+This section explains the logic and flow of the **Declarative Groovy Pipeline**, implemented within the `Jenkinsfile`.  
+It describes how Continuous Integration (CI) and Continuous Deployment (CD) are achieved step by step.
+
+---
+
+### Environment Block Configuration
+
+The flexibility of this Jenkins pipeline comes from its **Environment Variables**, defined at the top of the `Jenkinsfile`.  
+These variables are consistently used across all pipeline stages, allowing for easy configuration and reuse.
+
+| **Variable** | **Purpose** | **Example Value** |
+| :------------ | :----------- | :---------------- |
+| `GIT_REPO` | Source code repository URL. | `https://github.com/iko1718/jenkins-cicd-app` |
+| `KUBE_CONFIG_ID` | Jenkins Credential ID for the kubeconfig file. | `kubeconfig` |
+| `KUBE_SERVER_IP` | IP address and port of the Kubernetes API server. | `10.2.0.4:8443` |
+| `KUBE_API_ENDPOINT` | Full API server address used for cluster connection. | `https://10.2.0.4:8443` |
+| `KUBECONFIG_CLEAN_PATH` | Internal path for the clean, generated kubeconfig file. | `kubeconfig_clean.yaml` |
+
+These variables make the pipeline **adaptable** and **scalable** for different repositories and Kubernetes clusters without modifying the logic in every stage.
+
+---
+
+### Stage 1: Build & Setup (Continuous Integration)
+
+This stage prepares the Jenkins agent environment for interaction with Kubernetes.
+
+**Key Steps:**
+
+- **Tool Installation:**  
+  - Uses `curl` to dynamically fetch the **latest stable kubectl binary**, ensuring the Jenkins agent is self-sufficient for K8s interaction.  
+  - Example command:  
+    ```bash
+    curl -LO "https://storage.googleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
+    chmod +x ./kubectl
+    ```
+
+- **Artifact Simulation:**  
+  - Instead of an actual build, this example simulates the **core CI process**:  
+    - Code compilation  
+    - Unit testing  
+    - Docker image building (placeholder for `docker build -t myapp:$BUILD_ID .`)  
+  - Marks the step as complete before proceeding to deployment.
+
+ **Outcome:**  
+A ready environment with `kubectl` installed and validated.
+
+---
+
+### Stage 2: Initialize Kubeconfig (Critical Fix)
+
+This stage is **vital** for ensuring secure and reliable communication with the Kubernetes cluster.  
+It solves a **common CI/CD issue** where Jenkins file-based secrets may introduce whitespace or encoding errors in base64 certificate data, leading to *TLS PEM corruption* errors.
+
+**Key Steps:**
+
+1. **Credential Loading:**  
+   - The `withCredentials` block loads the **raw kubeconfig secret** from Jenkins into a temporary file (`KUBECONFIG_SOURCE`).
+
+2. **Secure Extraction & Cleaning:**  
+   - Uses shell commands with `sed` and `tr -d '[:space:]'` to clean **base64-encoded certificate data**, removing all whitespace and invalid formatting.  
+   - Fixes errors such as:
+     ```
+     tls: failed to find any PEM data in key input
+     ```
+
+3. **File Generation:**  
+   - The cleaned data is decoded using `base64 -d` into three separate files:  
+     - `ca.crt`  
+     - `client.crt`  
+     - `client.key`
+
+4. **Final Kubeconfig Creation:**  
+   - Generates a new, clean kubeconfig file (`kubeconfig_clean.yaml`) referencing these decoded files for authentication.  
+   - Updates the server address dynamically using:
+     ```bash
+     sed -i 's|server: https://.*|server: ${env.KUBE_API_ENDPOINT}|' ${KUBECONFIG_CLEAN_PATH}
+     ```
+
+5. **Connection Test:**  
+   - Validates connectivity using:
+     ```bash
+     ./kubectl cluster-info --insecure-skip-tls-verify
+     ```
+   - Ensures Jenkins can successfully communicate with the Kubernetes cluster before deployment.
+
+**Outcome:**  
+A verified, working kubeconfig enabling secure cluster access.
+
+---
+
+### Stage 3: Deploy Application (Continuous Deployment)
+
+This is the **deployment** stage where the verified configuration is used to deploy the application to Kubernetes.
+
+**Key Steps:**
+
+- **Kubeconfig Loading:**  
+  - The `KUBECONFIG` environment variable is set to the path of the clean file generated in Stage 2.  
+  - Ensures all subsequent `kubectl` commands use the secure configuration.
+
+- **Manifest Application:**  
+  - Executes:
+    ```bash
+    ./kubectl apply -f deployment.yaml
+    ./kubectl apply -f service.yaml
+    ```
+  - Applies both Kubernetes manifests:
+    - `deployment.yaml` → Defines application container, replicas, and image.  
+    - `service.yaml` → Defines how the app is exposed (e.g., NodePort, LoadBalancer).
+
+- **Validation:**  
+  - Confirms whether manifests exist before applying, preventing runtime errors.  
+  - Logs success or warnings accordingly.
+
+**Outcome:**  
+The application is deployed successfully to the Kubernetes cluster.
+
+
 
 
 
