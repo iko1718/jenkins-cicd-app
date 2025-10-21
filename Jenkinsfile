@@ -1,58 +1,77 @@
 pipeline {
+    // Defines where the pipeline will run. 'any' means any available agent.
     agent any
 
+    // Environment variables for configuration, making the pipeline adaptable.
+    environment {
+        // --- CONFIGURATION REQUIRED ---
+        // 1. The Git repository URL to clone
+        GIT_REPO = 'https://github.com/iko1718/jenkins-cicd-app'
+        // 2. The ID of the Jenkins Credential storing your kubeconfig file
+        KUBE_CONFIG_ID = 'kubeconfig'
+        // 3. The target IP/port of the Kubernetes API server (for deployment)
+        KUBE_SERVER_IP = '10.2.0.4:8443' 
+        // 4. Kubernetes API server endpoint (replace if using a different port/IP)
+        KUBE_API_ENDPOINT = "https://${KUBE_SERVER_IP}"
+        // ------------------------------
+        
+        // Path to the clean kubeconfig file created during initialization
+        KUBECONFIG_CLEAN_PATH = 'kubeconfig_clean.yaml'
+    }
+
     stages {
-        stage('Setup Tools') {
+        // Stage 1: Fetches the code and installs kubectl
+        stage('Build & Setup') {
             steps {
                 sh '''
-                echo "--- Installing kubectl ---"
+                echo "--- 1. Installing kubectl ---"
                 KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
                 curl -LO "https://storage.googleapis.com/kubernetes-release/release/$KUBE_VERSION/bin/linux/amd64/kubectl"
                 chmod +x ./kubectl
-                echo "kubectl ready"
+                echo "kubectl ready at: $PWD/kubectl"
                 '''
+                // In a real scenario, building a Docker image would happen here (e.g., docker build -t myapp:$BUILD_ID .)
+                echo "Artifact build simulated successfully."
             }
         }
 
-        // --- FIXED STAGE: Robust extraction using SED ---
+        // Stage 2: Initialize Kubeconfig - Solves the PEM data corruption issue
         stage('Initialize Kubeconfig') {
             steps {
-                // KUBECONFIG_SOURCE holds the PATH to the temporary kubeconfig file
+                // KUBECONFIG_SOURCE is the path to the temporary file holding the secret content
                 withCredentials([
-                    file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
+                    file(credentialsId: env.KUBE_CONFIG_ID, variable: 'KUBECONFIG_SOURCE')
                 ]) {
                     sh '''
+                    echo "--- 2. Initializing Kubeconfig with Robust Key Cleanup ---"
+                    
+                    # Ensure kubectl is accessible
                     export PATH=$PATH:${WORKSPACE}
-                    echo "--- Initializing Kubeconfig with Robust Key Cleanup (FINAL ATTEMPT) ---"
                     
-                    KUBECONFIG_CLEAN="kubeconfig_clean.yaml"
+                    # CRITICAL FIX: Use sed to extract and aggressively clean ALL whitespace from the base64 data.
+                    # This prevents the "tls: failed to find any PEM data in key input" error.
+                    echo "Extracting and cleaning base64 certificate data..."
 
-                    # CRITICAL FIX: Use sed to find the line, remove the label/colon, and pass the data 
-                    # to 'tr -d' to strip ALL remaining whitespace.
-                    
-                    # 1. Extract and aggressively clean ALL whitespace from the base64 data.
-                    # sed -n '/pattern/s/search/replace/p' - Finds the line, replaces the start with nothing, and prints the result.
+                    # sed -n '/pattern/s/search/replace/p' - Finds the line, removes the label/colon, and prints the result.
                     CA_DATA=$(sed -n '/certificate-authority-data:/s/.*: *//p' "${KUBECONFIG_SOURCE}" | tr -d '[:space:]')
                     CLIENT_CERT_DATA=$(sed -n '/client-certificate-data:/s/.*: *//p' "${KUBECONFIG_SOURCE}" | tr -d '[:space:]')
                     CLIENT_KEY_DATA=$(sed -n '/client-key-data:/s/.*: *//p' "${KUBECONFIG_SOURCE}" | tr -d '[:space:]')
 
                     if [ -z "$CLIENT_KEY_DATA" ]; then
-                        echo "FATAL ERROR: Client key data extraction failed. The Kubeconfig file might be missing the expected keys."
+                        echo "FATAL ERROR: Client key data extraction failed. Check your Kubeconfig secret format."
                         exit 1
                     fi
                     
-                    echo "Base64 data extracted and cleaned successfully."
-
-                    # 2. Decode the clean base64 strings into separate files
+                    # 3. Decode the clean base64 strings into separate files
                     echo "${CA_DATA}" | base64 -d > ca.crt
                     echo "${CLIENT_CERT_DATA}" | base64 -d > client.crt
                     echo "${CLIENT_KEY_DATA}" | base64 -d > client.key
 
-                    echo "Certificates successfully decoded to ca.crt, client.crt, client.key"
+                    echo "Certificates successfully decoded."
 
-                    # 3. Create the clean Kubeconfig file by substituting file paths for the base64 blobs
-                    # This replaces the entire data line with a clean path reference.
-                    cat << EOF > "${KUBECONFIG_CLEAN}"
+                    # 4. Create the clean Kubeconfig file by substituting file paths for the base64 blobs
+                    # This final file is used for all subsequent kubectl commands.
+                    cat << EOF > ${KUBECONFIG_CLEAN_PATH}
 $(sed \
     -e 's/certificate-authority-data:.*/certificate-authority: ca.crt/' \
     -e 's/client-certificate-data:.*/client-certificate: client.crt/' \
@@ -60,77 +79,53 @@ $(sed \
     "${KUBECONFIG_SOURCE}")
 EOF
                     
-                    # 4. Save the KUBECONFIG path to a file so subsequent stages can access it
-                    echo "${KUBECONFIG_CLEAN}" > .kubeconfig_path
+                    // Update the server address (if necessary, based on your previous logs)
+                    sh "sed -i 's|server: https://.*|server: ${env.KUBE_API_ENDPOINT}|' ${env.KUBECONFIG_CLEAN_PATH}"
                     
-                    # Test the connection with the newly created, clean file
+                    // Set environment variable for this and subsequent stages
+                    echo "${KUBECONFIG_CLEAN_PATH}" > .kubeconfig_path
+                    export KUBECONFIG="${KUBECONFIG_CLEAN_PATH}"
+                    
+                    // Test connection (This is the critical test for success)
                     echo "--- Testing connection with cleaned Kubeconfig ---"
-                    export KUBECONFIG="${KUBECONFIG_CLEAN}"
-                    ./kubectl version --client 
-                    # Success here means the key is decoded correctly!
-                    ./kubectl cluster-info --insecure-skip-tls-verify || true
-                    
+                    ./kubectl cluster-info --insecure-skip-tls-verify || echo "kubectl connection test FAILED. Check port-forward/firewall."
                     '''
                 }
             }
         }
-        // --- END OF FIXED STAGE ---
 
-        stage('Check Port Forward Status') {
-            steps {
-                sh """
-                echo "=== CHECKING KUBECTL PORT-FORWARD STATUS ==="
-                echo "If you're running 'kubectl port-forward' on your VM, make sure it's still active."
-                echo "The connection was refused, which means:"
-                echo "1. The port-forward command might have stopped"
-                echo "2. The IP address might be wrong" 
-                echo "3. There might be a firewall issue"
-                echo ""
-                echo "On your VM, please check if the port-forward is still running:"
-                echo "  ps aux | grep 'kubectl port-forward'"
-                echo ""
-                echo "If it's not running, restart it with:"
-                echo "  kubectl port-forward --address 10.2.0.4 -n kube-system deployment/kube-apiserver-minikube 8443:8443"
-                """
-            }
-        }
-
+        // Stage 3: Deployment to Kubernetes
         stage('Deploy Application') {
             steps {
-                sh """
-                export PATH=\$PATH:\$PWD
+                sh '''
+                echo "--- 3. Deploying to Kubernetes ---"
                 
-                # Load KUBECONFIG from the initialization stage
+                # Load the clean KUBECONFIG path set in the previous stage
                 if [ -f .kubeconfig_path ]; then
-                    KUBECONFIG_CLEAN=\$(cat .kubeconfig_path)
-                    export KUBECONFIG="\$KUBECONFIG_CLEAN"
-                    echo "Using cleaned KUBECONFIG: \$KUBECONFIG_CLEAN"
+                    export KUBECONFIG=$(cat .kubeconfig_path)
+                    echo "Using KUBECONFIG: ${KUBECONFIG}"
                 else
-                    echo "ERROR: Kubeconfig path not found. Initialization stage failed."
+                    echo "ERROR: Kubeconfig path not found. Cannot deploy."
                     exit 1
                 fi
-                
-                echo "=== ATTEMPTING DEPLOYMENT ==="
-                
-                # Try deployment with the newly set KUBECONFIG
-                if [ -n "\$KUBECONFIG" ]; then
-                    echo "Using KUBECONFIG: \${KUBECONFIG}"
-                    
-                    for file in deployment.yaml service.yaml; do
-                        if [ -f "\$file" ]; then
-                            echo "Applying \$file..."
-                            ./kubectl apply -f \$file --insecure-skip-tls-verify
-                        else
-                            echo "Note: \$file not found"
-                        fi
-                    done
-                    
-                    echo "=== VERIFYING DEPLOYMENT ==="
-                    ./kubectl get deployments,services,pods --insecure-skip-tls-verify || echo "Cannot verify deployment"
+
+                # Apply Kubernetes manifests (deployment.yaml and service.yaml are expected in the repo)
+                if [ -f "deployment.yaml" ]; then
+                    ./kubectl apply -f deployment.yaml --insecure-skip-tls-verify
+                    echo "Applied deployment.yaml"
                 else
-                    echo "No working kubeconfig found for deployment"
+                    echo "Warning: deployment.yaml not found. Skipping deployment."
                 fi
-                """
+                
+                if [ -f "service.yaml" ]; then
+                    ./kubectl apply -f service.yaml --insecure-skip-tls-verify
+                    echo "Applied service.yaml"
+                else
+                    echo "Warning: service.yaml not found. Skipping service."
+                fi
+
+                echo "Deployment step complete."
+                '''
             }
         }
     }
@@ -138,10 +133,10 @@ EOF
     post {
         always {
             sh '''
-            echo "=== CLEANING UP ==="
-            # Clean up all temporary files, including the newly created ones
-            rm -f kubeconfig_approach*.yaml simple_kubeconfig.yaml
-            rm -f kubeconfig_clean.yaml ca.crt client.crt client.key .kubeconfig_path
+            echo "=== CLEANING UP WORKSPACE ==="
+            # Clean up temporary files created during the process
+            rm -f ./kubectl
+            rm -f ${KUBECONFIG_CLEAN_PATH} ca.crt client.crt client.key .kubeconfig_path
             '''
         }
     }
