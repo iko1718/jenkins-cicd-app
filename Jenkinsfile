@@ -1,5 +1,5 @@
 pipeline {
-    // Defines where the pipeline will run. 'any' means any available agent.
+
     agent any
 
     // Environment variables for configuration, making the pipeline adaptable.
