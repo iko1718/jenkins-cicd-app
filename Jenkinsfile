@@ -14,75 +14,63 @@ pipeline {
             }
         }
 
-        stage('Test Connection with Different Approaches') {
+        // --- NEW STAGE: FIXES KEY CORRUPTION AND INITIALIZES KUBECONFIG ---
+        stage('Initialize Kubeconfig') {
             steps {
+                // Use the existing credential ID 'kubeconfig'
                 withCredentials([
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
                 ]) {
-                    sh """
-                    export PATH=\$PATH:\$PWD
+                    sh '''
+                    export PATH=$PATH:${WORKSPACE}
+                    echo "--- Initializing Kubeconfig with Robust Key Cleanup ---"
+                    
+                    KUBECONFIG_CLEAN="kubeconfig_clean.yaml"
 
-                    echo "=== TESTING DIFFERENT CONNECTION APPROACHES ==="
+                    # CRITICAL FIX: Extract and aggressively clean ALL whitespace from the base64 data
+                    # This prevents the "tls: failed to find any PEM data in key input" error.
+                    # We use cut -d: -f2- to handle colons that might exist in the base64 data.
+                    CA_DATA=$(echo "${KUBECONFIG_SOURCE}" | grep 'certificate-authority-data:' | cut -d: -f2- | tr -d '[:space:]')
+                    CLIENT_CERT_DATA=$(echo "${KUBECONFIG_SOURCE}" | grep 'client-certificate-data:' | cut -d: -f2- | tr -d '[:space:]')
+                    CLIENT_KEY_DATA=$(echo "${KUBECONFIG_SOURCE}" | grep 'client-key-data:' | cut -d: -f2- | tr -d '[:space:]')
+
+                    if [ -z "$CLIENT_KEY_DATA" ]; then
+                        echo "FATAL ERROR: Client key data extraction failed. Check your Kubeconfig secret format."
+                        exit 1
+                    fi
                     
-                    # Approach 1: Use original kubeconfig with modified server URL
-                    echo "--- Approach 1: Modified original kubeconfig ---"
-                    cp "\$KUBECONFIG_SOURCE" kubeconfig_approach1.yaml
-                    sed -i 's|server: https://.*|server: https://10.2.0.4:8443|' kubeconfig_approach1.yaml
-                    
-                    echo "Testing Approach 1..."
-                    KUBECONFIG=kubeconfig_approach1.yaml ./kubectl get nodes --insecure-skip-tls-verify || echo "Approach 1 failed"
-                    
-                    # Approach 2: Try with the original server URL from kubeconfig
-                    echo "--- Approach 2: Original server URL ---"
-                    ORIGINAL_SERVER=\$(grep "server:" "\$KUBECONFIG_SOURCE" | awk '{print \$2}' | head -1)
-                    echo "Original server from kubeconfig: \$ORIGINAL_SERVER"
-                    
-                    cp "\$KUBECONFIG_SOURCE" kubeconfig_approach2.yaml
-                    export KUBECONFIG=kubeconfig_approach2.yaml
-                    ./kubectl get nodes --insecure-skip-tls-verify || echo "Approach 2 failed"
-                    
-                    # Approach 3: Check if we can reach any Kubernetes API
-                    echo "--- Approach 3: Testing various endpoints ---"
-                    echo "Testing localhost..."
-                    curl -k https://localhost:8443/healthz 2>/dev/null || echo "localhost:8443 not reachable"
-                    
-                    echo "Testing 10.2.0.4..."
-                    curl -k https://10.2.0.4:8443/healthz 2>/dev/null || echo "10.2.0.4:8443 not reachable"
-                    
-                    echo "Testing 192.168.49.2..."
-                    curl -k https://192.168.49.2:8443/healthz 2>/dev/null || echo "192.168.49.2:8443 not reachable"
-                    
-                    # Approach 4: Simple file-based kubeconfig
-                    echo "--- Approach 4: File-based kubeconfig ---"
-                    cat > simple_kubeconfig.yaml << EOF
-apiVersion: v1
-clusters:
-- cluster:
-    insecure-skip-tls-verify: true
-    server: https://10.2.0.4:8443
-  name: local
-contexts:
-- context:
-    cluster: local
-    user: local
-  name: local
-current-context: local
-kind: Config
-users:
-- name: local
-  user: {}
+                    echo "Base64 data extracted and cleaned successfully."
+
+                    # 2. Decode the clean base64 strings into separate files
+                    echo "${CA_DATA}" | base64 -d > ca.crt
+                    echo "${CLIENT_CERT_DATA}" | base64 -d > client.crt
+                    echo "${CLIENT_KEY_DATA}" | base64 -d > client.key
+
+                    echo "Certificates successfully decoded to ca.crt, client.crt, client.key"
+
+                    # 3. Create the clean Kubeconfig file by substituting file paths for the base64 blobs
+                    cat << EOF > "${KUBECONFIG_CLEAN}"
+$(echo "${KUBECONFIG_SOURCE}" \
+    | sed 's/certificate-authority-data:.*/certificate-authority: ca.crt/' \
+    | sed 's/client-certificate-data:.*/client-certificate: client.crt/' \
+    | sed 's/client-key-data:.*/client-key: client.key/')
 EOF
                     
-                    KUBECONFIG=simple_kubeconfig.yaml ./kubectl cluster-info || echo "Approach 4 failed"
+                    # 4. Save the KUBECONFIG path to a file so subsequent stages can access it
+                    echo "${KUBECONFIG_CLEAN}" > .kubeconfig_path
                     
-                    echo "=== NETWORK DIAGNOSTICS ==="
-                    echo "Checking network connectivity..."
-                    ping -c 2 10.2.0.4 || echo "Cannot ping 10.2.0.4"
-                    netstat -tuln | grep 8443 || echo "No local service on 8443"
-                    """
+                    # Test the connection with the newly created, clean file
+                    echo "--- Testing connection with cleaned Kubeconfig ---"
+                    export KUBECONFIG="${KUBECONFIG_CLEAN}"
+                    ./kubectl version --client 
+                    # This command should now succeed!
+                    ./kubectl cluster-info --insecure-skip-tls-verify || true
+                    
+                    '''
                 }
             }
         }
+        // --- END OF NEW STAGE ---
 
         stage('Check Port Forward Status') {
             steps {
@@ -108,12 +96,22 @@ EOF
                 sh """
                 export PATH=\$PATH:\$PWD
                 
+                # --- FIX: Load KUBECONFIG from the initialization stage ---
+                if [ -f .kubeconfig_path ]; then
+                    KUBECONFIG_CLEAN=\$(cat .kubeconfig_path)
+                    export KUBECONFIG="\$KUBECONFIG_CLEAN"
+                    echo "Using cleaned KUBECONFIG: \$KUBECONFIG_CLEAN"
+                else
+                    echo "ERROR: Kubeconfig path not found. Initialization stage failed."
+                    exit 1
+                fi
+                # --------------------------------------------------------
+                
                 echo "=== ATTEMPTING DEPLOYMENT ==="
                 
-                # Try deployment with the most likely working config
-                if [ -f "kubeconfig_approach1.yaml" ]; then
-                    export KUBECONFIG=kubeconfig_approach1.yaml
-                    echo "Using Approach 1 for deployment..."
+                # Try deployment with the newly set KUBECONFIG
+                if [ -n "\$KUBECONFIG" ]; then
+                    echo "Using KUBECONFIG: \${KUBECONFIG}"
                     
                     for file in deployment.yaml service.yaml; do
                         if [ -f "\$file" ]; then
@@ -138,7 +136,9 @@ EOF
         always {
             sh '''
             echo "=== CLEANING UP ==="
+            # Clean up all temporary files, including the newly created ones
             rm -f kubeconfig_approach*.yaml simple_kubeconfig.yaml
+            rm -f kubeconfig_clean.yaml ca.crt client.crt client.key .kubeconfig_path
             '''
         }
     }
