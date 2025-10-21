@@ -14,28 +14,30 @@ pipeline {
             }
         }
 
-        // --- NEW STAGE: FIXES KEY CORRUPTION AND INITIALIZES KUBECONFIG ---
+        // --- FIXED STAGE: Robust extraction using SED ---
         stage('Initialize Kubeconfig') {
             steps {
-                // Use the existing credential ID 'kubeconfig'
+                // KUBECONFIG_SOURCE holds the PATH to the temporary kubeconfig file
                 withCredentials([
                     file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_SOURCE')
                 ]) {
                     sh '''
                     export PATH=$PATH:${WORKSPACE}
-                    echo "--- Initializing Kubeconfig with Robust Key Cleanup ---"
+                    echo "--- Initializing Kubeconfig with Robust Key Cleanup (FINAL ATTEMPT) ---"
                     
                     KUBECONFIG_CLEAN="kubeconfig_clean.yaml"
 
-                    # CRITICAL FIX: Extract and aggressively clean ALL whitespace from the base64 data
-                    # This prevents the "tls: failed to find any PEM data in key input" error.
-                    # We use cut -d: -f2- to handle colons that might exist in the base64 data.
-                    CA_DATA=$(echo "${KUBECONFIG_SOURCE}" | grep 'certificate-authority-data:' | cut -d: -f2- | tr -d '[:space:]')
-                    CLIENT_CERT_DATA=$(echo "${KUBECONFIG_SOURCE}" | grep 'client-certificate-data:' | cut -d: -f2- | tr -d '[:space:]')
-                    CLIENT_KEY_DATA=$(echo "${KUBECONFIG_SOURCE}" | grep 'client-key-data:' | cut -d: -f2- | tr -d '[:space:]')
+                    # CRITICAL FIX: Use sed to find the line, remove the label/colon, and pass the data 
+                    # to 'tr -d' to strip ALL remaining whitespace.
+                    
+                    # 1. Extract and aggressively clean ALL whitespace from the base64 data.
+                    # sed -n '/pattern/s/search/replace/p' - Finds the line, replaces the start with nothing, and prints the result.
+                    CA_DATA=$(sed -n '/certificate-authority-data:/s/.*: *//p' "${KUBECONFIG_SOURCE}" | tr -d '[:space:]')
+                    CLIENT_CERT_DATA=$(sed -n '/client-certificate-data:/s/.*: *//p' "${KUBECONFIG_SOURCE}" | tr -d '[:space:]')
+                    CLIENT_KEY_DATA=$(sed -n '/client-key-data:/s/.*: *//p' "${KUBECONFIG_SOURCE}" | tr -d '[:space:]')
 
                     if [ -z "$CLIENT_KEY_DATA" ]; then
-                        echo "FATAL ERROR: Client key data extraction failed. Check your Kubeconfig secret format."
+                        echo "FATAL ERROR: Client key data extraction failed. The Kubeconfig file might be missing the expected keys."
                         exit 1
                     fi
                     
@@ -49,11 +51,13 @@ pipeline {
                     echo "Certificates successfully decoded to ca.crt, client.crt, client.key"
 
                     # 3. Create the clean Kubeconfig file by substituting file paths for the base64 blobs
+                    # This replaces the entire data line with a clean path reference.
                     cat << EOF > "${KUBECONFIG_CLEAN}"
-$(echo "${KUBECONFIG_SOURCE}" \
-    | sed 's/certificate-authority-data:.*/certificate-authority: ca.crt/' \
-    | sed 's/client-certificate-data:.*/client-certificate: client.crt/' \
-    | sed 's/client-key-data:.*/client-key: client.key/')
+$(sed \
+    -e 's/certificate-authority-data:.*/certificate-authority: ca.crt/' \
+    -e 's/client-certificate-data:.*/client-certificate: client.crt/' \
+    -e 's/client-key-data:.*/client-key: client.key/' \
+    "${KUBECONFIG_SOURCE}")
 EOF
                     
                     # 4. Save the KUBECONFIG path to a file so subsequent stages can access it
@@ -63,14 +67,14 @@ EOF
                     echo "--- Testing connection with cleaned Kubeconfig ---"
                     export KUBECONFIG="${KUBECONFIG_CLEAN}"
                     ./kubectl version --client 
-                    # This command should now succeed!
+                    # Success here means the key is decoded correctly!
                     ./kubectl cluster-info --insecure-skip-tls-verify || true
                     
                     '''
                 }
             }
         }
-        // --- END OF NEW STAGE ---
+        // --- END OF FIXED STAGE ---
 
         stage('Check Port Forward Status') {
             steps {
@@ -96,7 +100,7 @@ EOF
                 sh """
                 export PATH=\$PATH:\$PWD
                 
-                # --- FIX: Load KUBECONFIG from the initialization stage ---
+                # Load KUBECONFIG from the initialization stage
                 if [ -f .kubeconfig_path ]; then
                     KUBECONFIG_CLEAN=\$(cat .kubeconfig_path)
                     export KUBECONFIG="\$KUBECONFIG_CLEAN"
@@ -105,7 +109,6 @@ EOF
                     echo "ERROR: Kubeconfig path not found. Initialization stage failed."
                     exit 1
                 fi
-                # --------------------------------------------------------
                 
                 echo "=== ATTEMPTING DEPLOYMENT ==="
                 
