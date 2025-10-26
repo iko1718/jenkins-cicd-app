@@ -7,11 +7,13 @@ pipeline {
         KUBE_SERVER_IP = '10.2.0.4:8443'
         KUBE_API_ENDPOINT = "https://${KUBE_SERVER_IP}"
         KUBECONFIG_CLEAN_PATH = 'kubeconfig_clean.yaml'
+        BUILD_ID = "${env.BUILD_ID ?: 'latest'}"
     }
 
     stages {
         stage('Build & Setup') {
             steps {
+                checkout scm
                 sh '''
                 echo "Installing kubectl..."
                 KUBE_VERSION=$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)
@@ -82,6 +84,9 @@ EOF
         }
 
         stage('Deploy Application') {
+            options {
+                timeout(time: 10, unit: 'MINUTES')
+            }
             steps {
                 sh '''
                 if [ -f .kubeconfig_path ]; then
@@ -111,6 +116,12 @@ EOF
     }
 
     post {
+        success {
+            echo "Pipeline completed successfully."
+        }
+        failure {
+            echo "Pipeline failed. Check logs for details."
+        }
         always {
             sh '''
             echo "Cleaning up workspace..."
