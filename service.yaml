@@ -5,7 +5,7 @@ metadata:
   labels:
     app: ci-cd-app
 spec:
-  type: NodePort  # Change to LoadBalancer if your cluster supports it
+  type: NodePort  
   selector:
     app: ci-cd-app
   ports:
